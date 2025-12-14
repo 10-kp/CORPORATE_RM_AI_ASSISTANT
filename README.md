@@ -1,4 +1,4 @@
-# CORPORATE RM AI ASSISTANT
+# Corporate RM AI Assistant
 
 ## Overview
 
@@ -102,7 +102,7 @@ All outputs are advisory and designed to support front-office discussions and pr
 ## Technology stack
 
 Backend: FastAPI
-- Core endpoints: /score, /demo/score, /auth/login
+- Core endpoints: /score, /demo/score
 
 Frontend: React + Vite
 - Single-page wizard UI
@@ -146,8 +146,6 @@ README-QUICKSTART.md
 No MLOps or cloud deployment is required to run the prototype locally.
 
 ---
-
-AI Challenge context
 
 ## AI Challenge context
 
