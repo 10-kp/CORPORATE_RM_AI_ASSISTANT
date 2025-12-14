@@ -8,8 +8,24 @@ from typing import Union, Optional
 import os, math, re
 import numpy as np, pandas as pd
 
+from api.schemas import (
+    DealInputRequest,
+    DealSummaryResponse,
+    DealReadinessOut,
+)
+
+from src.domain.deal_summary import (
+    DealSummary,
+    DealReadiness,
+    Eligibility,
+    FinancialSignals,
+    RatingAnchor,
+)
+
+
 # ---------- FastAPI app + CORS ----------
-app = FastAPI(title="SME Risk Scoring API")
+app = FastAPI(title="Corporate RM Deal Readiness API")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -17,6 +33,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # ---------- model loading ----------
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
@@ -120,7 +137,13 @@ def build_row(obj) -> pd.DataFrame:
     return pd.DataFrame([row], columns=EXPECTED)
 
 # ---------- /api/score ----------
+@app.post("/assess", response_model=DealSummaryResponse)
+def assess_deal(payload: DealInputRequest):
+    deal = build_deal_summary(payload)
+    return deal.to_dict()
+
 @app.post("/api/score")
+
 def score(p: ScoreIn):
     # normalize UI inputs
     loan_amnt   = _fnum(p.loan_amnt)
@@ -182,6 +205,77 @@ def score(p: ScoreIn):
     ]
     feats.sort(key=lambda d: d["value"], reverse=True)
     return {"pd": pd_hat, "feats": feats[:7], "model_version": "demo-mock"}
+
+def build_deal_summary(payload: DealInputRequest) -> DealSummary:
+    strengths = []
+    constraints = []
+    rm_actions = []
+    talking_points = []
+
+    # Eligibility interpretation
+    if payload.eligibility.score >= 4.0:
+        strengths.append("Eligibility score supports mandate alignment")
+    else:
+        constraints.append("Eligibility score below strong alignment threshold")
+        rm_actions.append("Identify actions to improve eligibility drivers")
+
+    # Sector alignment
+    if payload.sector in {
+        "Manufacturing",
+        "Advanced Technology",
+        "Healthcare",
+        "Food Security",
+        "Renewables",
+    }:
+        strengths.append(f"Operates in strategic sector: {payload.sector}")
+    else:
+        constraints.append("Sector is not a core strategic priority")
+
+    # Financial signals
+    if payload.financial_signals.margin_trend_3y == "Under Pressure":
+        constraints.append("Margins under pressure")
+        rm_actions.append("Discuss margin recovery or cost optimisation plans")
+
+    if payload.financial_signals.leverage_position == "Elevated":
+        constraints.append("Leverage is elevated")
+        rm_actions.append("Assess deleveraging or capital support options")
+
+    if payload.financial_signals.cashflow_quality == "Weak":
+        constraints.append("Cash flow generation is weak")
+        rm_actions.append("Clarify cash flow sustainability and liquidity buffers")
+
+    # Deal readiness
+    if not constraints:
+        status = "Strong"
+    elif len(constraints) <= 2:
+        status = "Conditional"
+    else:
+        status = "Weak"
+
+    mandate_fit_summary = (
+        f"The deal operates in the {payload.sector} sector with an "
+        f"eligibility score of {payload.eligibility.score:.1f}. "
+        f"Overall readiness is assessed as {status}."
+    )
+
+    return DealSummary(
+        client_name=payload.client_name,
+        group_name=payload.group_name,
+        sector=payload.sector,
+        rating_anchor=RatingAnchor(**payload.rating_anchor.model_dump()),
+        eligibility=Eligibility(**payload.eligibility.model_dump()),
+        financial_signals=FinancialSignals(**payload.financial_signals.model_dump()),
+        deal_readiness=DealReadiness(
+            status=status,
+            strengths=strengths,
+            constraints=constraints,
+        ),
+        mandate_fit_summary=mandate_fit_summary,
+        rm_actions=rm_actions,
+        talking_points=talking_points,
+        notes=payload.notes,
+    )
+
 
 # ---------- SPA (serve built frontend if present) ----------
 STATIC_DIR = os.path.join(BASE_DIR, "static")
