@@ -1,391 +1,635 @@
-import React, { useMemo, useState } from "react";
-import { TrendingDown } from "lucide-react";
-import { ResponsiveContainer, BarChart, XAxis, YAxis, Tooltip, Bar } from "recharts";
+import React, { useState } from "react";
 
-// Use the real backend:
-const API_URL = import.meta.env.VITE_API_URL || "/api/score";
+// Default to same-origin proxy (Vite dev server can proxy if configured),
+// otherwise set VITE_API_URL=http://127.0.0.1:8000/assess
+const API_URL = import.meta.env.VITE_API_URL || "/assess";
+
+type Sector =
+  | "Manufacturing"
+  | "Advanced Technology"
+  | "Healthcare"
+  | "Food Security"
+  | "Renewables"
+  | "Other";
+
+type Trend3Y = "Improving" | "Stable" | "Declining";
+type MarginTrend = "Improving" | "Stable" | "Under Pressure";
+type Leverage = "Low" | "Moderate" | "Elevated";
+type Signal3 = "Strong" | "Adequate" | "Weak";
+type Volatility = "Low" | "Moderate" | "High";
+type Investment = "High" | "Moderate" | "Low";
+type Readiness = "Strong" | "Conditional" | "Weak";
 
 type Form = {
-  loan_amnt?: number;
-  int_rate?: number;
-  dti?: number;
-  annual_inc?: number;
-  term?: number;          // 36 or 60
-  grade?: "A"|"B"|"C"|"D"|"E"|"F"|"G";
-  revol_util?: number;
-  delinq_2yrs?: number;
-  open_acc?: number;
+  client_name: string;
+  group_name: string;
+  sector: Sector;
+
+  rating_system: string;
+  rating_grade: string;
+  rating_outlook: string;
+  rating_as_of: string;
+
+  eligibility_score: number; // 0–6
+  eligibility_drivers: string; // comma-separated
+
+  revenue_trend_3y: Trend3Y;
+  margin_trend_3y: MarginTrend;
+  leverage_position: Leverage;
+  cashflow_quality: Signal3;
+  earnings_volatility: Volatility;
+  capex_growth_investment: Investment;
+  financial_transparency: Signal3;
+
+  notes: string;
 };
 
 type Result = {
-  pd: number;
-  feats: { name: string; value: number }[];
-  model_version?: string;
+  client_name: string;
+  group_name?: string | null;
+  sector: string;
+
+  deal_readiness: {
+    status: Readiness;
+    strengths: string[];
+    constraints: string[];
+  };
+
+  rm_actions: string[];
+  talking_points: string[];
+
+  mandate_fit_summary: string;
 };
 
-function sigmoid(x:number){ return 1/(1+Math.exp(-x)); }
-
-// Lightweight mock model so the app works instantly (replace with API when ready)
-function mockScore(payload: Form): Result {
-  const w: any = {
-    intercept: -2.0,
-    int_rate: 0.15,
-    dti: 0.04,
-    annual_inc: -0.000002,
-    term: 0.2, // 60 months riskier
-    grade: 0.18, // worse grade → higher risk
-    revol_util: 0.01,
-    delinq_2yrs: 0.25,
-    open_acc: -0.02,
-    loan_amnt: 0.000002,
-  };
-  const gradeMap: any = { A:0, B:1, C:2, D:3, E:4, F:5, G:6 };
-  const x =
-    w.intercept +
-    w.int_rate * (payload.int_rate || 0) +
-    w.dti * (payload.dti || 0) +
-    w.annual_inc * (payload.annual_inc || 0) +
-    w.term * ((payload.term || 36) === 60 ? 1 : 0) +
-    w.grade * gradeMap[payload.grade || "B"] +
-    w.revol_util * (payload.revol_util || 0) +
-    w.delinq_2yrs * (payload.delinq_2yrs || 0) +
-    w.open_acc * (payload.open_acc || 0) +
-    w.loan_amnt * (payload.loan_amnt || 0);
-
-  const pd = sigmoid(x);
-
-  const featsRaw = [
-    { name: "Interest rate (%)", value: Math.abs(w.int_rate * (payload.int_rate || 0)) },
-    { name: "Debt-to-income (%)", value: Math.abs(w.dti * (payload.dti || 0)) },
-    { name: "Term (60m flag)", value: Math.abs(w.term * ((payload.term || 36) === 60 ? 1 : 0)) },
-    { name: "Grade (A→G)", value: Math.abs(w.grade * gradeMap[payload.grade || "B"]) },
-    { name: "Revolving util (%)", value: Math.abs(w.revol_util * (payload.revol_util || 0)) },
-    { name: "Annual income (AED)", value: Math.abs(w.annual_inc * (payload.annual_inc || 0)) },
-    { name: "Delinq in 2 yrs", value: Math.abs(w.delinq_2yrs * (payload.delinq_2yrs || 0)) },
-    { name: "Open accounts", value: Math.abs(w.open_acc * (payload.open_acc || 0)) },
-    { name: "Loan amount (AED)", value: Math.abs(w.loan_amnt * (payload.loan_amnt || 0)) },
-  ].sort((a, b) => b.value - a.value);
-
-  return { pd, feats: featsRaw.slice(0, 7), model_version: "demo-0.1" };
-}
-
-function PricingHint({ pd }: { pd: number }) {
-  const base = 6.0; // AED interbank proxy (illustrative)
-  const spread = pd < 0.03 ? 3 : pd < 0.07 ? 4.5 : pd < 0.12 ? 6.5 : pd < 0.20 ? 9 : 12;
-  const rate = (base + spread).toFixed(1);
-  const text =
-    pd < 0.07
-      ? "Prime clients / low expected loss"
-      : pd < 0.12
-      ? "Standard book with controls"
-      : pd < 0.20
-      ? "Heightened monitoring"
-      : "Consider collateral / covenants";
+function SectionTitle({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-      <TrendingDown size={18} style={{ marginTop: 2 }} />
-      <div>
-        <div style={{ fontSize: 14 }}>
-          Suggested all-in rate (illustrative): <strong>{rate}%</strong>
-        </div>
-        <div style={{ fontSize: 12, color: "#666" }}>
-          {text}. Calibrate with RAROC and pricing committee.
-        </div>
-      </div>
+    <div style={{ fontSize: 13, fontWeight: 700, margin: "18px 0 10px 0" }}>
+      {children}
     </div>
   );
 }
 
+function FieldRow({
+  label,
+  input,
+}: {
+  label: string;
+  input: React.ReactNode;
+}) {
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "220px 1fr",
+        gap: 10,
+        alignItems: "center",
+        marginBottom: 10,
+      }}
+    >
+      <div style={{ fontSize: 13, color: "#555" }}>{label}</div>
+      <div>{input}</div>
+    </div>
+  );
+}
+
+function Badge({ status }: { status: Readiness }) {
+  const bg =
+    status === "Strong"
+      ? "#e7f7ee"
+      : status === "Conditional"
+      ? "#fff6e5"
+      : "#ffe9e9";
+  const border =
+    status === "Strong"
+      ? "#2ecc71"
+      : status === "Conditional"
+      ? "#f39c12"
+      : "#e74c3c";
+  const color =
+    status === "Strong"
+      ? "#1e874b"
+      : status === "Conditional"
+      ? "#a56500"
+      : "#b3261e";
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        padding: "6px 10px",
+        borderRadius: 999,
+        background: bg,
+        border: `1px solid ${border}`,
+        color,
+        fontSize: 12,
+        fontWeight: 700,
+      }}
+    >
+      {status}
+    </span>
+  );
+}
+
 export default function App() {
-  const [form, setForm] = useState<Form>({ term: 36, grade: "B" });
+  const [form, setForm] = useState<Form>({
+    client_name: "",
+    group_name: "",
+    sector: "Manufacturing",
+
+    rating_system: "Credit Lens",
+    rating_grade: "",
+    rating_outlook: "Stable",
+    rating_as_of: "",
+
+    eligibility_score: 3.5,
+    eligibility_drivers: "",
+
+    revenue_trend_3y: "Stable",
+    margin_trend_3y: "Stable",
+    leverage_position: "Moderate",
+    cashflow_quality: "Adequate",
+    earnings_volatility: "Moderate",
+    capex_growth_investment: "Moderate",
+    financial_transparency: "Adequate",
+
+    notes: "",
+  });
+
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<Result | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const risk = useMemo(() => {
-    if (!result) return null;
-    const p = result.pd;
-    if (p < 0.03) return { label: "A (Low)", color: "#22c55e" };
-    if (p < 0.07) return { label: "B (Mod-Low)", color: "#84cc16" };
-    if (p < 0.12) return { label: "C (Moderate)", color: "#eab308" };
-    if (p < 0.20) return { label: "D (High)", color: "#f97316" };
-    return { label: "E (Very High)", color: "#ef4444" };
-  }, [result]);
-
-  const featureData = useMemo(
-    () => (result ? result.feats.map((f) => ({ name: f.name, value: Number(f.value.toFixed(4)) })) : []),
-    [result]
-  );
-
-  async function onScore() {
+  async function onAssess() {
     setError(null);
     setLoading(true);
+    setResult(null);
+
     try {
-      if (API_URL) {
-        const resp = await fetch(API_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(form),
-        });
-        if (!resp.ok) throw new Error(`API error ${resp.status}`);
-        const out: Result = await resp.json();
-        setResult(out);
-      } else {
-        // offline / demo
-        await new Promise((r) => setTimeout(r, 400));
-        setResult(mockScore(form));
+      const resp = await fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_name: form.client_name,
+          group_name: form.group_name || null,
+          sector: form.sector,
+
+          rating_anchor: {
+            system: form.rating_system,
+            grade: form.rating_grade,
+            outlook: form.rating_outlook || null,
+            as_of: form.rating_as_of || null,
+          },
+
+          eligibility: {
+            score: Number(form.eligibility_score),
+            drivers: (form.eligibility_drivers || "")
+              .split(",")
+              .map((s: string) => s.trim())
+              .filter(Boolean),
+            breakdown: {},
+          },
+
+          financial_signals: {
+            revenue_trend_3y: form.revenue_trend_3y,
+            margin_trend_3y: form.margin_trend_3y,
+            leverage_position: form.leverage_position,
+            cashflow_quality: form.cashflow_quality,
+            earnings_volatility: form.earnings_volatility,
+            capex_growth_investment: form.capex_growth_investment,
+            financial_transparency: form.financial_transparency,
+          },
+
+          notes: form.notes || null,
+        }),
+      });
+
+      if (!resp.ok) {
+        const txt = await resp.text().catch(() => "");
+        throw new Error(`API error ${resp.status}${txt ? `: ${txt}` : ""}`);
       }
+
+      const out: Result = await resp.json();
+      setResult(out);
     } catch (e: any) {
-      setError(e?.message || "Failed to score");
+      setError(e?.message || "Request failed");
     } finally {
       setLoading(false);
     }
   }
 
-  function field(
-    label: string,
-    input: React.ReactNode
-  ) {
-    return (
-      <div style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 8, alignItems: "center" }}>
-        <div style={{ fontSize: 13, color: "#555" }}>{label}</div>
-        <div>{input}</div>
-      </div>
-    );
-  }
-
-  const wrap: React.CSSProperties = { maxWidth: 1100, margin: "24px auto", padding: "0 16px" };
-  const card: React.CSSProperties = { border: "1px solid #e5e7eb", borderRadius: 12, padding: 16, background: "#fff" };
-  const heading: React.CSSProperties = { fontSize: 20, fontWeight: 600, marginBottom: 8 };
+  const canSubmit =
+    form.client_name.trim().length > 0 &&
+    form.rating_grade.trim().length > 0 &&
+    form.eligibility_score >= 0 &&
+    form.eligibility_score <= 6;
 
   return (
-    <div style={{ background: "#f7f7fb", minHeight: "100vh" }}>
-      <div style={wrap}>
-        <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-          <div>
-            <div style={{ fontSize: 22, fontWeight: 600 }}>SME Credit Risk Scoring</div>
-            <div style={{ fontSize: 12, color: "#666" }}>
-              End-user demo. Works offline (mock) or via your FastAPI at <code>/api/score</code>.
-            </div>
-          </div>
-        </header>
+    <div style={{ maxWidth: 1000, margin: "24px auto", padding: 16 }}>
+      <div style={{ fontSize: 18, fontWeight: 800 }}>
+        Corporate RM Deal Readiness & Mandate Fit Assistant
+      </div>
+      <div style={{ fontSize: 13, color: "#666", marginTop: 6 }}>
+        Front-office decision support. Interprets existing ratings, eligibility, sector alignment,
+        and RM-friendly financial signals.
+      </div>
 
-        <div style={{ display: "grid", gap: 16, gridTemplateColumns: "1fr 1fr" }}>
-          {/* Left: Inputs */}
-          <div style={card}>
-            <div style={heading}>Borrower Inputs</div>
-            <div style={{ display: "grid", gap: 10 }}>
-              {field(
-                "Loan amount (AED)",
-                <input
-                  type="number"
-                  placeholder="200000"
-                  value={form.loan_amnt ?? ""}
-                  onChange={(e) => setForm({ ...form, loan_amnt: Number(e.target.value) })}
-                  style={{ width: "100%", padding: 8, border: "1px solid #ddd", borderRadius: 8 }}
-                />
-              )}
-              {field(
-                "Interest rate (%)",
-                <input
-                  type="number"
-                  step="0.01"
-                  placeholder="12.5"
-                  value={form.int_rate ?? ""}
-                  onChange={(e) => setForm({ ...form, int_rate: Number(e.target.value) })}
-                  style={{ width: "100%", padding: 8, border: "1px solid #ddd", borderRadius: 8 }}
-                />
-              )}
-              {field(
-                "Debt-to-income (DTI, %)",
-                <input
-                  type="number"
-                  step="0.1"
-                  placeholder="18"
-                  value={form.dti ?? ""}
-                  onChange={(e) => setForm({ ...form, dti: Number(e.target.value) })}
-                  style={{ width: "100%", padding: 8, border: "1px solid #ddd", borderRadius: 8 }}
-                />
-              )}
-              {field(
-                "Annual income (AED)",
-                <input
-                  type="number"
-                  placeholder="420000"
-                  value={form.annual_inc ?? ""}
-                  onChange={(e) => setForm({ ...form, annual_inc: Number(e.target.value) })}
-                  style={{ width: "100%", padding: 8, border: "1px solid #ddd", borderRadius: 8 }}
-                />
-              )}
-              {field(
-                "Term",
-                <select
-                  value={String(form.term ?? 36)}
-                  onChange={(e) => setForm({ ...form, term: Number(e.target.value) })}
-                  style={{ width: "100%", padding: 8, border: "1px solid #ddd", borderRadius: 8 }}
-                >
-                  <option value="36">36 months</option>
-                  <option value="60">60 months</option>
-                </select>
-              )}
-              {field(
-                "Grade (A best → G worst)",
-                <select
-                  value={form.grade ?? "B"}
-                  onChange={(e) => setForm({ ...form, grade: e.target.value as any })}
-                  style={{ width: "100%", padding: 8, border: "1px solid #ddd", borderRadius: 8 }}
-                >
-                  {["A", "B", "C", "D", "E", "F", "G"].map((g) => (
-                    <option key={g} value={g}>
-                      {g}
-                    </option>
-                  ))}
-                </select>
-              )}
-              {field(
-                "Revolving utilization (%)",
-                <input
-                  type="number"
-                  step="0.1"
-                  placeholder="45"
-                  value={form.revol_util ?? ""}
-                  onChange={(e) => setForm({ ...form, revol_util: Number(e.target.value) })}
-                  style={{ width: "100%", padding: 8, border: "1px solid #ddd", borderRadius: 8 }}
-                />
-              )}
-              {field(
-                "Delinquencies (2 yrs)",
-                <input
-                  type="number"
-                  placeholder="0"
-                  value={form.delinq_2yrs ?? ""}
-                  onChange={(e) => setForm({ ...form, delinq_2yrs: Number(e.target.value) })}
-                  style={{ width: "100%", padding: 8, border: "1px solid #ddd", borderRadius: 8 }}
-                />
-              )}
-              {field(
-                "Open accounts",
-                <input
-                  type="number"
-                  placeholder="6"
-                  value={form.open_acc ?? ""}
-                  onChange={(e) => setForm({ ...form, open_acc: Number(e.target.value) })}
-                  style={{ width: "100%", padding: 8, border: "1px solid #ddd", borderRadius: 8 }}
-                />
-              )}
-            </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          gap: 20,
+          marginTop: 18,
+          alignItems: "start",
+        }}
+      >
+        {/* LEFT: INPUTS */}
+        <div style={{ border: "1px solid #e5e5e5", borderRadius: 10, padding: 16 }}>
+          <SectionTitle>Client</SectionTitle>
 
-            <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
-              <button
-                onClick={onScore}
-                disabled={loading}
-                style={{
-                  padding: "8px 14px",
-                  borderRadius: 10,
-                  border: "1px solid #ddd",
-                  background: "#111827",
-                  color: "white",
-                  cursor: "pointer",
-                }}
+          <FieldRow
+            label="Client name *"
+            input={
+              <input
+                value={form.client_name}
+                onChange={(e) => setForm({ ...form, client_name: e.target.value })}
+                style={{ width: "100%", padding: 8 }}
+                placeholder="e.g., ABC Manufacturing LLC"
+              />
+            }
+          />
+
+          <FieldRow
+            label="Group name"
+            input={
+              <input
+                value={form.group_name}
+                onChange={(e) => setForm({ ...form, group_name: e.target.value })}
+                style={{ width: "100%", padding: 8 }}
+                placeholder="Optional"
+              />
+            }
+          />
+
+          <FieldRow
+            label="Strategic sector"
+            input={
+              <select
+                value={form.sector}
+                onChange={(e) => setForm({ ...form, sector: e.target.value as Sector })}
+                style={{ width: "100%", padding: 8 }}
               >
-                {loading ? "Scoring..." : "Score application"}
-              </button>
-              <button
-                onClick={() => {
-                  setForm({ term: 36, grade: "B" });
-                  setResult(null);
-                  setError(null);
-                }}
-                style={{
-                  padding: "8px 14px",
-                  borderRadius: 10,
-                  border: "1px solid #ddd",
-                  background: "#fff",
-                  cursor: "pointer",
-                }}
+                <option>Manufacturing</option>
+                <option>Advanced Technology</option>
+                <option>Healthcare</option>
+                <option>Food Security</option>
+                <option>Renewables</option>
+                <option>Other</option>
+              </select>
+            }
+          />
+
+          <SectionTitle>Rating anchor</SectionTitle>
+
+          <FieldRow
+            label="System"
+            input={
+              <select
+                value={form.rating_system}
+                onChange={(e) => setForm({ ...form, rating_system: e.target.value })}
+                style={{ width: "100%", padding: 8 }}
               >
-                Reset
-              </button>
-            </div>
+                <option>Credit Lens</option>
+                <option>Moody's Risk Advisor</option>
+              </select>
+            }
+          />
 
-            {error && <div style={{ color: "#b91c1c", marginTop: 8, fontSize: 13 }}>{error}</div>}
-            <div style={{ fontSize: 11, color: "#666", marginTop: 8 }}>
-              Note: Demo uses a placeholder model. Point API_URL to your FastAPI for production.
-            </div>
+          <FieldRow
+            label="Rating grade *"
+            input={
+              <input
+                value={form.rating_grade}
+                onChange={(e) => setForm({ ...form, rating_grade: e.target.value })}
+                style={{ width: "100%", padding: 8 }}
+                placeholder="e.g., Baa3 / 6 / BB- (as per system)"
+              />
+            }
+          />
+
+          <FieldRow
+            label="Outlook"
+            input={
+              <input
+                value={form.rating_outlook}
+                onChange={(e) => setForm({ ...form, rating_outlook: e.target.value })}
+                style={{ width: "100%", padding: 8 }}
+                placeholder="Stable / Negative / Positive"
+              />
+            }
+          />
+
+          <FieldRow
+            label="As of (YYYY-MM-DD)"
+            input={
+              <input
+                value={form.rating_as_of}
+                onChange={(e) => setForm({ ...form, rating_as_of: e.target.value })}
+                style={{ width: "100%", padding: 8 }}
+                placeholder="Optional"
+              />
+            }
+          />
+
+          <SectionTitle>Eligibility</SectionTitle>
+
+          <FieldRow
+            label="Eligibility score (0–6) *"
+            input={
+              <input
+                type="number"
+                min={0}
+                max={6}
+                step={0.1}
+                value={form.eligibility_score}
+                onChange={(e) =>
+                  setForm({ ...form, eligibility_score: Number(e.target.value) })
+                }
+                style={{ width: "100%", padding: 8 }}
+              />
+            }
+          />
+
+          <FieldRow
+            label="Eligibility drivers (comma-separated)"
+            input={
+              <input
+                value={form.eligibility_drivers}
+                onChange={(e) => setForm({ ...form, eligibility_drivers: e.target.value })}
+                style={{ width: "100%", padding: 8 }}
+                placeholder="e.g., Job creation, Exports, ICV"
+              />
+            }
+          />
+
+          <SectionTitle>Financial signals</SectionTitle>
+
+          <FieldRow
+            label="Revenue trend (3Y)"
+            input={
+              <select
+                value={form.revenue_trend_3y}
+                onChange={(e) => setForm({ ...form, revenue_trend_3y: e.target.value as Trend3Y })}
+                style={{ width: "100%", padding: 8 }}
+              >
+                <option>Improving</option>
+                <option>Stable</option>
+                <option>Declining</option>
+              </select>
+            }
+          />
+
+          <FieldRow
+            label="Margin trend (3Y)"
+            input={
+              <select
+                value={form.margin_trend_3y}
+                onChange={(e) =>
+                  setForm({ ...form, margin_trend_3y: e.target.value as MarginTrend })
+                }
+                style={{ width: "100%", padding: 8 }}
+              >
+                <option>Improving</option>
+                <option>Stable</option>
+                <option>Under Pressure</option>
+              </select>
+            }
+          />
+
+          <FieldRow
+            label="Leverage position"
+            input={
+              <select
+                value={form.leverage_position}
+                onChange={(e) =>
+                  setForm({ ...form, leverage_position: e.target.value as Leverage })
+                }
+                style={{ width: "100%", padding: 8 }}
+              >
+                <option>Low</option>
+                <option>Moderate</option>
+                <option>Elevated</option>
+              </select>
+            }
+          />
+
+          <FieldRow
+            label="Cash flow quality"
+            input={
+              <select
+                value={form.cashflow_quality}
+                onChange={(e) =>
+                  setForm({ ...form, cashflow_quality: e.target.value as Signal3 })
+                }
+                style={{ width: "100%", padding: 8 }}
+              >
+                <option>Strong</option>
+                <option>Adequate</option>
+                <option>Weak</option>
+              </select>
+            }
+          />
+
+          <FieldRow
+            label="Earnings volatility"
+            input={
+              <select
+                value={form.earnings_volatility}
+                onChange={(e) =>
+                  setForm({ ...form, earnings_volatility: e.target.value as Volatility })
+                }
+                style={{ width: "100%", padding: 8 }}
+              >
+                <option>Low</option>
+                <option>Moderate</option>
+                <option>High</option>
+              </select>
+            }
+          />
+
+          <FieldRow
+            label="Capex / growth investment"
+            input={
+              <select
+                value={form.capex_growth_investment}
+                onChange={(e) =>
+                  setForm({ ...form, capex_growth_investment: e.target.value as Investment })
+                }
+                style={{ width: "100%", padding: 8 }}
+              >
+                <option>High</option>
+                <option>Moderate</option>
+                <option>Low</option>
+              </select>
+            }
+          />
+
+          <FieldRow
+            label="Financial transparency"
+            input={
+              <select
+                value={form.financial_transparency}
+                onChange={(e) =>
+                  setForm({ ...form, financial_transparency: e.target.value as Signal3 })
+                }
+                style={{ width: "100%", padding: 8 }}
+              >
+                <option>Strong</option>
+                <option>Adequate</option>
+                <option>Weak</option>
+              </select>
+            }
+          />
+
+          <SectionTitle>Notes</SectionTitle>
+          <textarea
+            value={form.notes}
+            onChange={(e) => setForm({ ...form, notes: e.target.value })}
+            style={{ width: "100%", padding: 8, minHeight: 70 }}
+            placeholder="Optional RM notes"
+          />
+
+          <div style={{ marginTop: 14, display: "flex", gap: 10 }}>
+            <button
+              onClick={onAssess}
+              disabled={!canSubmit || loading}
+              style={{
+                padding: "10px 14px",
+                borderRadius: 8,
+                border: "1px solid #111",
+                background: loading ? "#eee" : "#111",
+                color: loading ? "#111" : "#fff",
+                cursor: loading ? "not-allowed" : "pointer",
+                fontWeight: 700,
+              }}
+            >
+              {loading ? "Assessing..." : "Assess deal"}
+            </button>
+
+            <button
+              onClick={() => setResult(null)}
+              style={{
+                padding: "10px 14px",
+                borderRadius: 8,
+                border: "1px solid #ccc",
+                background: "#fff",
+                cursor: "pointer",
+              }}
+            >
+              Clear result
+            </button>
           </div>
 
-          {/* Right: Result */}
-          <div style={card}>
-            <div style={heading}>Risk Result & Explanation</div>
-            {!result && (
-              <div style={{ fontSize: 14, color: "#666" }}>
-                Enter inputs and click <strong>Score application</strong> to see PD, risk tier, drivers and pricing hint.
-              </div>
-            )}
-
-            {result && (
-              <div style={{ display: "grid", gap: 12 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                  <div style={{ border: "1px solid #eee", borderRadius: 10, padding: 12 }}>
-                    <div style={{ fontSize: 12, color: "#666" }}>Predicted Default Probability (PD)</div>
-                    <div style={{ fontSize: 28, fontWeight: 600 }}>{(result.pd * 100).toFixed(2)}%</div>
-                  </div>
-                  <div style={{ border: "1px solid #eee", borderRadius: 10, padding: 12 }}>
-                    <div style={{ fontSize: 12, color: "#666" }}>Risk Tier</div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span
-                        style={{
-                          display: "inline-block",
-                          width: 10,
-                          height: 10,
-                          borderRadius: "999px",
-                          background: risk?.color || "#ccc",
-                        }}
-                      />
-                      <span style={{ fontSize: 18, fontWeight: 500 }}>{risk?.label}</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div style={{ border: "1px solid #eee", borderRadius: 10, padding: 12 }}>
-                  <div style={{ fontSize: 12, color: "#666", marginBottom: 6 }}>
-                    Top drivers (higher bar = stronger impact)
-                  </div>
-                  <div style={{ width: "100%", height: 260 }}>
-                    <ResponsiveContainer>
-                      <BarChart data={featureData} layout="vertical" margin={{ left: 16, right: 16 }}>
-                        <XAxis type="number" hide />
-                        <YAxis type="category" dataKey="name" width={180} />
-                        <Tooltip formatter={(v) => [v as number, "impact"]} />
-                        <Bar dataKey="value" radius={[4, 4, 4, 4]} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-
-                <div style={{ border: "1px solid #eee", borderRadius: 10, padding: 12 }}>
-                  <div style={{ fontSize: 12, color: "#666", marginBottom: 6 }}>
-                    Indicative pricing guidance (illustrative)
-                  </div>
-                  <PricingHint pd={result.pd} />
-                </div>
-
-                <div style={{ border: "1px solid #eee", borderRadius: 10, padding: 12, background: "#fafafa" }}>
-                  <div style={{ fontSize: 12, color: "#666", marginBottom: 4 }}>Audit trail</div>
-                  <ul style={{ paddingLeft: 18, margin: 0, fontSize: 13 }}>
-                    <li>Inputs validated on client.</li>
-                    <li>Model version: <code>{result.model_version || "demo-0.1"}</code></li>
-                    <li>Timestamp: {new Date().toLocaleString()}</li>
-                  </ul>
-                </div>
-              </div>
-            )}
-          </div>
+          {error && (
+            <div style={{ marginTop: 12, color: "#b3261e", fontSize: 13 }}>
+              {error}
+            </div>
+          )}
         </div>
 
-        <footer style={{ marginTop: 16, textAlign: "center", fontSize: 12, color: "#666" }}>
-          Built for bankers: explainable, fast, production-ready. Swap to API when ready.
-        </footer>
+        {/* RIGHT: OUTPUTS */}
+        <div style={{ border: "1px solid #e5e5e5", borderRadius: 10, padding: 16 }}>
+          <SectionTitle>Output</SectionTitle>
+
+          {!result ? (
+            <div style={{ fontSize: 13, color: "#666" }}>
+              Run an assessment to see deal readiness, constraints, and RM actions.
+            </div>
+          ) : (
+            <>
+              {/* 1) Status */}
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                <div>
+                  <div style={{ fontSize: 12, color: "#666" }}>Deal readiness</div>
+                  <div style={{ marginTop: 6 }}>
+                    <Badge status={result.deal_readiness.status} />
+                  </div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 12, color: "#666" }}>Client</div>
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>{result.client_name}</div>
+                  {result.group_name ? (
+                    <div style={{ fontSize: 12, color: "#666" }}>{result.group_name}</div>
+                  ) : null}
+                </div>
+              </div>
+
+              {/* Summary */}
+              <div style={{ marginTop: 12, fontSize: 13 }}>
+                <div style={{ fontWeight: 700, marginBottom: 6 }}>Mandate fit summary</div>
+                <div style={{ color: "#333" }}>{result.mandate_fit_summary}</div>
+              </div>
+
+              {/* 2) Constraints */}
+              <div style={{ marginTop: 14 }}>
+                <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>
+                  Constraints
+                </div>
+                {result.deal_readiness.constraints?.length ? (
+                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+                    {result.deal_readiness.constraints.map((c, idx) => (
+                      <li key={idx} style={{ marginBottom: 6 }}>
+                        {c}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div style={{ fontSize: 13, color: "#666" }}>None identified.</div>
+                )}
+              </div>
+
+              {/* 3) RM actions */}
+              <div style={{ marginTop: 14 }}>
+                <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>
+                  RM actions
+                </div>
+                {result.rm_actions?.length ? (
+                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+                    {result.rm_actions.map((a, idx) => (
+                      <li key={idx} style={{ marginBottom: 6 }}>
+                        {a}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div style={{ fontSize: 13, color: "#666" }}>No actions suggested.</div>
+                )}
+              </div>
+
+              {/* 4) Talking points */}
+              <div style={{ marginTop: 14 }}>
+                <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>
+                  Talking points
+                </div>
+                {result.talking_points?.length ? (
+                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+                    {result.talking_points.map((t, idx) => (
+                      <li key={idx} style={{ marginBottom: 6 }}>
+                        {t}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div style={{ fontSize: 13, color: "#666" }}>
+                    (Optional) Add talking points generation in the AI layer.
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      <div style={{ marginTop: 16, fontSize: 12, color: "#666" }}>
+        Backend endpoint: <code>{API_URL}</code>
       </div>
     </div>
   );
