@@ -4,4 +4,6 @@ numpy
 pandas
 joblib
 lightgbm<5
+openai
+
 # shap

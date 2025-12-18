@@ -89,3 +89,49 @@ class DealSummaryResponse(BaseModel):
 
     created_at: Optional[date] = None
     notes: Optional[str] = None
+
+from pydantic import BaseModel, Field
+from typing import List
+
+class AIExplainRequest(BaseModel):
+    deal_summary: str
+
+class AIExplainResponse(BaseModel):
+    executive_summary: str
+    key_risks_explained: List[str]
+    rm_talking_points: List[str]
+    disclaimer: str
+
+class AIQARequest(BaseModel):
+    deal_summary: Optional[str] = None
+    question: str
+
+class AIQAResponse(BaseModel):
+    answer: str
+    disclaimer: str
+
+# ===============================
+# AI schemas (Explain + Q&A)
+# ===============================
+
+class AIExplainRequest(BaseModel):
+    deal_summary: dict
+
+
+class AIExplainResponse(BaseModel):
+    executive_summary: str
+    key_risks_explained: list[str]
+    rm_talking_points: list[str]
+    disclaimer: str
+
+
+class AIQARequest(BaseModel):
+    question: str
+    deal_summary: dict | None = None
+
+
+class AIQAResponse(BaseModel):
+    answer: str
+    disclaimer: str
+
+

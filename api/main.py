@@ -1,4 +1,7 @@
 # ---------- imports ----------
+import os
+from openai import OpenAI, RateLimitError
+from api.schemas import AIExplainRequest, AIExplainResponse, AIQARequest, AIQAResponse
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -7,6 +10,10 @@ from pydantic import BaseModel, ConfigDict
 from typing import Union, Optional
 import os, math, re
 import numpy as np, pandas as pd
+
+MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+DISCLAIMER = "Decision-support only. Verify independently. Not a credit decision or approval."
+
 
 from api.schemas import (
     DealInputRequest,
@@ -24,7 +31,15 @@ from src.domain.deal_summary import (
 
 
 # ---------- FastAPI app + CORS ----------
-app = FastAPI(title="Corporate RM Deal Readiness API")
+app = FastAPI()
+
+MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+DISCLAIMER = "Decision-support only. Not a credit decision or approval."
+
+oa_client = None
+if os.getenv("OPENAI_API_KEY"):
+    oa_client = OpenAI()
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -141,6 +156,72 @@ def build_row(obj) -> pd.DataFrame:
 def assess_deal(payload: DealInputRequest):
     deal = build_deal_summary(payload)
     return deal.to_dict()
+
+# ===============================
+# AI: Q&A
+# ===============================
+
+@app.post("/ai/qa", response_model=AIQAResponse)
+def ai_qa(payload: AIQARequest):
+
+    if oa_client is None:
+        return AIQAResponse(
+            answer="AI not configured. Set OPENAI_API_KEY to enable Q&A.",
+            disclaimer=DISCLAIMER,
+        )
+
+    try:
+        r = oa_client.responses.create(
+            model=MODEL_NAME,
+            input=payload.question,
+        )
+
+        return AIQAResponse(
+            answer=r.output_text,
+            disclaimer=DISCLAIMER,
+        )
+
+    except RateLimitError:
+        return AIQAResponse(
+            answer="AI is temporarily unavailable (rate limit).",
+            disclaimer=DISCLAIMER,
+        )
+
+    except Exception as e:
+        return AIQAResponse(
+            answer=f"AI error: {type(e).__name__}",
+            disclaimer=DISCLAIMER,
+        )
+
+
+# ===============================
+# AI: Explain deal
+# ===============================
+
+@app.post("/ai/explain", response_model=AIExplainResponse)
+def ai_explain(payload: AIExplainRequest):
+
+    if oa_client is None:
+        return AIExplainResponse(
+            executive_summary="AI not configured.",
+            key_risks_explained=[],
+            rm_talking_points=[],
+            disclaimer=DISCLAIMER,
+        )
+
+    r = oa_client.responses.create(
+        model=MODEL_NAME,
+        input=f"Explain risks and RM talking points:\n{payload.deal_summary}",
+    )
+
+    return AIExplainResponse(
+        executive_summary=r.output_text,
+        key_risks_explained=[],
+        rm_talking_points=[],
+        disclaimer=DISCLAIMER,
+    )
+
+
 
 @app.post("/api/score")
 
@@ -275,6 +356,11 @@ def build_deal_summary(payload: DealInputRequest) -> DealSummary:
         talking_points=talking_points,
         notes=payload.notes,
     )
+
+@app.post("/assess", response_model=DealSummaryResponse)
+def assess_deal(payload: DealInputRequest):
+    deal = build_deal_summary(payload)
+    return deal.to_dict()
 
 
 # ---------- SPA (serve built frontend if present) ----------
