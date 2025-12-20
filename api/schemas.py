@@ -93,17 +93,19 @@ class DealSummaryResponse(BaseModel):
 from pydantic import BaseModel, Field
 from typing import List
 
-class AIExplainRequest(BaseModel):
-    deal_summary: str
+# ===============================
+# AI Explain 
+# ===============================
 
 class AIExplainResponse(BaseModel):
     executive_summary: str
-    key_risks_explained: List[str]
-    rm_talking_points: List[str]
+    key_risks_explained: List[str] = []
+    rm_talking_points: List[str] = []
     disclaimer: str
 
+# --- AI: Q&A ---
 class AIQARequest(BaseModel):
-    deal_summary: Optional[str] = None
+    deal_summary: Optional["DealSummaryResponse"] = None
     question: str
 
 class AIQAResponse(BaseModel):
