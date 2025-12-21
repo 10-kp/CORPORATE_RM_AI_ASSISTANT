@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 # api/main.py
 import os
 from typing import Dict, Any, Optional, List, Union
@@ -37,7 +40,7 @@ MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 # Safe OpenAI init (never crash if key missing)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-oa_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+oa_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 # -----------------------------
