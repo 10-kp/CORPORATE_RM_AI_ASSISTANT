@@ -1,450 +1,357 @@
 # api/main.py
-# ---------- imports ----------
 import os
-import math
-import re
-from typing import Optional, Union
+from typing import Dict, Any, Optional, List, Union
 
-import numpy as np
-import pandas as pd
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, ConfigDict
 
-from openai import OpenAI, RateLimitError
+from openai import OpenAI
+from openai import RateLimitError
 
 from api.schemas import (
     DealInputRequest,
     DealSummaryResponse,
-    AIExplainRequest,
-    AIExplainResponse,
     AIQARequest,
     AIQAResponse,
+    AIExplainRequest,
+    AIExplainResponse,
 )
 
-from src.domain.deal_summary import (
-    DealSummary,
-    DealReadiness,
-    Eligibility,
-    FinancialSignals,
-    RatingAnchor,
-)
-
-# ---------- constants ----------
-MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-DISCLAIMER = "Decision-support only. Verify independently. Not a credit decision or approval."
-
-# ---------- OpenAI client (safe init) ----------
-oa_client: Optional[OpenAI] = None
-if os.getenv("OPENAI_API_KEY"):
-    oa_client = OpenAI()
-
-# ---------- FastAPI app + CORS ----------
-app = FastAPI()
+# -----------------------------
+# App config
+# -----------------------------
+app = FastAPI(title="Corporate RM Deal Readiness API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=["*"],  # OK for local dev; tighten for prod
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------- model loading ----------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODELS_DIR = os.path.join(BASE_DIR, "models")
-JOBLIB_PATH = os.path.join(MODELS_DIR, "model.joblib")
-TXT_PATH = os.path.join(MODELS_DIR, "model.txt")
+DISCLAIMER = "Decision-support only. Verify independently. Not a credit decision or approval."
+MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-USE_REAL = False
-BOOSTER = None
-EXPECTED = []
-EXPLAINER = None
+# Safe OpenAI init (never crash if key missing)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+oa_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-try:
-    if os.path.exists(JOBLIB_PATH):
-        import joblib
 
-        MODEL = joblib.load(JOBLIB_PATH)
-        BOOSTER = MODEL.booster_ if hasattr(MODEL, "booster_") else MODEL
-        EXPECTED = list(BOOSTER.feature_name() or [])
-        USE_REAL = True
-        print(f"[startup] Loaded joblib model with {len(EXPECTED)} features.")
-    elif os.path.exists(TXT_PATH):
-        import lightgbm as lgb
+# -----------------------------
+# Utilities
+# -----------------------------
+def _to_dict(obj: Any) -> Dict[str, Any]:
+    """
+    Normalize Pydantic model or dict to plain dict.
+    Handles Pydantic v2 (model_dump) and v1 (dict).
+    """
+    if obj is None:
+        return {}
+    if isinstance(obj, dict):
+        return obj
+    if hasattr(obj, "model_dump"):  # Pydantic v2
+        return obj.model_dump()
+    if hasattr(obj, "dict"):  # Pydantic v1
+        return obj.dict()
+    # last resort
+    return {}
 
-        BOOSTER = lgb.Booster(model_file=TXT_PATH)
-        EXPECTED = list(BOOSTER.feature_name() or [])
-        USE_REAL = True
-        print(f"[startup] Loaded LightGBM text model with {len(EXPECTED)} features.")
+
+# -----------------------------
+# Step 3: Credit logic tightening
+# -----------------------------
+def _count_weak_signals(financial_signals: Dict[str, Any]) -> int:
+    weak = 0
+    for _, v in (financial_signals or {}).items():
+        if isinstance(v, str) and v.strip().lower() == "weak":
+            weak += 1
+    return weak
+
+
+def compute_readiness(eligibility_score: float, financial_signals: Dict[str, Any]) -> str:
+    """
+    Rules:
+      - Strong if eligibility >= 4.0 AND no weak signals
+      - Weak if 2+ weak signals
+      - else Conditional
+    """
+    weak_count = _count_weak_signals(financial_signals)
+    if weak_count >= 2:
+        return "Weak"
+    if eligibility_score >= 4.0 and weak_count == 0:
+        return "Strong"
+    return "Conditional"
+
+
+def build_deal_summary(payload: DealInputRequest) -> Dict[str, Any]:
+    """
+    Produces the response expected by the frontend and AI endpoints.
+    """
+    elig_score = float(payload.eligibility.score)
+    drivers = payload.eligibility.drivers or []
+    sector = payload.sector
+
+    fs = _to_dict(payload.financial_signals)
+    status = compute_readiness(elig_score, fs)
+    weak_count = _count_weak_signals(fs)
+
+    strengths: List[str] = []
+    constraints: List[str] = []
+
+    # Strengths / constraints from eligibility
+    if elig_score >= 4.0:
+        strengths.append("Eligibility score indicates strong alignment with mandate.")
+    elif elig_score >= 3.0:
+        strengths.append("Eligibility score indicates partial alignment with mandate.")
     else:
-        print("[startup] No model file found — running in MOCK mode.")
-except Exception as e:
-    print(f"[startup] Failed to load model file: {e}. Falling back to MOCK mode.")
-    BOOSTER = None
-    USE_REAL = False
+        constraints.append("Low eligibility score may limit mandate alignment.")
 
-# optional SHAP
-if USE_REAL and BOOSTER is not None:
-    try:
-        import shap
+    if drivers:
+        strengths.append(
+            f"Eligibility drivers provided: {', '.join(drivers[:5])}" + ("..." if len(drivers) > 5 else "")
+        )
 
-        EXPLAINER = shap.TreeExplainer(BOOSTER)
-        print("[startup] SHAP explainer ready.")
-    except Exception as e:
-        print(f"[startup] SHAP unavailable ({e}). Will use global importances.")
+    # Constraints from signals
+    if weak_count >= 2:
+        constraints.append("Multiple weak financial signals indicate elevated credit risk.")
+    elif weak_count == 1:
+        constraints.append("One weak financial signal flagged; requires validation and mitigants.")
 
-
-# ---------- /api/score schema ----------
-class ScoreIn(BaseModel):
-    loan_amnt: Union[float, str] | None = None
-    int_rate: Union[float, str] | None = None
-    dti: Union[float, str] | None = None
-    annual_inc: Union[float, str] | None = None
-    term: Union[int, str] | None = 36
-    grade: str | None = "B"
-    revol_util: Union[float, str] | None = None
-    delinq_2yrs: Union[int, str] | None = 0
-    open_acc: Union[int, str] | None = 0
-    model_config = ConfigDict(extra="ignore")
-
-
-def _fnum(x, default=0.0) -> float:
-    if x is None:
-        return float(default)
-    if isinstance(x, (int, float)):
-        return float(x)
-    if isinstance(x, str):
-        s = x.strip().replace(",", "")
-        m = re.search(r"-?\d+(\.\d+)?", s)
-        if m:
-            return float(m.group(0))
-    return float(default)
-
-
-def _fint(x, default=0) -> int:
-    return int(round(_fnum(x, default)))
-
-
-def build_row(obj) -> pd.DataFrame:
-    gmap = {"A": 0, "B": 1, "C": 2, "D": 3, "E": 4, "F": 5, "G": 6}
-    base = {
-        "loan_amnt": float(obj.loan_amnt),
-        "int_rate": float(obj.int_rate),
-        "dti": float(obj.dti),
-        "annual_inc": float(obj.annual_inc),
-        "revol_util": float(obj.revol_util),
-        "delinq_2yrs": float(obj.delinq_2yrs),
-        "open_acc": float(obj.open_acc),
-        "term": float(obj.term),
-        "grade": float(gmap.get(obj.grade, 1)),
-        "grade_idx": float(gmap.get(obj.grade, 1)),
-    }
-
-    if not EXPECTED:
-        cols = [
-            "loan_amnt",
-            "int_rate",
-            "dti",
-            "annual_inc",
-            "term",
-            "grade_idx",
-            "revol_util",
-            "delinq_2yrs",
-            "open_acc",
-        ]
-        return pd.DataFrame([[base.get(k, 0.0) for k in cols]], columns=cols)
-
-    row = {c: 0.0 for c in EXPECTED}
-    for k in ["loan_amnt", "int_rate", "dti", "annual_inc", "revol_util", "delinq_2yrs", "open_acc"]:
-        if k in row:
-            row[k] = base[k]
-
-    if "term" in row:
-        row["term"] = base["term"]
-    else:
-        tcol = f"term_{int(base['term'])}"
-        if tcol in row:
-            row[tcol] = 1.0
-
-    if "grade" in row:
-        row["grade"] = base["grade"]
-    if "grade_idx" in row:
-        row["grade_idx"] = base["grade_idx"]
-    else:
-        gcol = f"grade_{str(obj.grade).upper()}"
-        if gcol in row:
-            row[gcol] = 1.0
-
-    return pd.DataFrame([row], columns=EXPECTED)
-
-
-# ---------- domain logic ----------
-def build_deal_summary(payload: DealInputRequest) -> DealSummary:
-    strengths = []
-    constraints = []
-    rm_actions = []
-    talking_points = []
-
-    # Eligibility interpretation
-    if payload.eligibility.score >= 4.0:
-        strengths.append("Eligibility score supports mandate alignment")
-    else:
+    if elig_score < 4.0:
         constraints.append("Eligibility score below strong alignment threshold")
-        rm_actions.append("Identify actions to improve eligibility drivers")
 
-    # Sector alignment
-    if payload.sector in {"Manufacturing", "Advanced Technology", "Healthcare", "Food Security", "Renewables"}:
-        strengths.append(f"Operates in strategic sector: {payload.sector}")
+    # RM actions
+    rm_actions: List[str] = []
+    if elig_score < 4.0:
+        rm_actions.append("Identify actions to improve eligibility drivers (exports, ICV, strategic impact).")
+    if weak_count >= 1:
+        rm_actions.append("Request supporting evidence for financial signals (audited FS, bank statements, aging, covenants).")
+        rm_actions.append("Consider mitigants: collateral, tighter covenants, DSRA/escrow, shorter tenor, pricing adjustment.")
+    if not rm_actions:
+        rm_actions.append("Proceed to detailed credit assessment (KYC, financial spreading, cashflow, security package).")
+
+    # Talking points (RM-facing)
+    if status == "Strong":
+        talking_points = [
+            "Confirm facility purpose, tenor, security, and repayment source.",
+            "Validate rating anchor and latest performance trend.",
+            "Agree documentation timeline and conditions precedent.",
+        ]
+    elif status == "Conditional":
+        talking_points = [
+            "Clarify which drivers can lift eligibility and by when.",
+            "Validate weak/uncertain financial areas with evidence.",
+            "Discuss structure enhancements (security/covenants/DSRA).",
+        ]
     else:
-        constraints.append("Sector is not a core strategic priority")
-
-    # Financial signals
-    if payload.financial_signals.margin_trend_3y == "Under Pressure":
-        constraints.append("Margins under pressure")
-        rm_actions.append("Discuss margin recovery or cost optimisation plans")
-
-    if payload.financial_signals.leverage_position == "Elevated":
-        constraints.append("Leverage is elevated")
-        rm_actions.append("Assess deleveraging or capital support options")
-
-    if payload.financial_signals.cashflow_quality == "Weak":
-        constraints.append("Cash flow generation is weak")
-        rm_actions.append("Clarify cash flow sustainability and liquidity buffers")
-
-    # Deal readiness
-    if not constraints:
-        status = "Strong"
-    elif len(constraints) <= 2:
-        status = "Conditional"
-    else:
-        status = "Weak"
+        talking_points = [
+            "Explain key credit concerns and what data is needed to reconsider.",
+            "Explore alternative structures or smaller exposure/shorter tenor.",
+            "Assess sponsor support and credible mitigants before proceeding.",
+        ]
 
     mandate_fit_summary = (
-        f"The deal operates in the {payload.sector} sector with an "
-        f"eligibility score of {payload.eligibility.score:.1f}. "
+        f"The deal operates in the {sector} sector with an eligibility score of {elig_score:.1f}. "
         f"Overall readiness is assessed as {status}."
     )
 
-    return DealSummary(
-        client_name=payload.client_name,
-        group_name=payload.group_name,
-        sector=payload.sector,
-        rating_anchor=RatingAnchor(**payload.rating_anchor.model_dump()),
-        eligibility=Eligibility(**payload.eligibility.model_dump()),
-        financial_signals=FinancialSignals(**payload.financial_signals.model_dump()),
-        deal_readiness=DealReadiness(status=status, strengths=strengths, constraints=constraints),
-        mandate_fit_summary=mandate_fit_summary,
-        rm_actions=rm_actions,
-        talking_points=talking_points,
-        notes=payload.notes,
-    )
+    return {
+        "client_name": payload.client_name,
+        "group_name": payload.group_name,
+        "sector": sector,
+        "deal_readiness": {"status": status, "strengths": strengths, "constraints": constraints},
+        "rm_actions": rm_actions,
+        "talking_points": talking_points,
+        "mandate_fit_summary": mandate_fit_summary,
+        "created_at": getattr(payload.rating_anchor, "as_of", None),
+        "notes": payload.notes,
+        "rating_anchor": _to_dict(payload.rating_anchor),
+        "eligibility": _to_dict(payload.eligibility),
+        "financial_signals": fs,
+    }
 
 
-# ---------- endpoints ----------
+# -----------------------------
+# Core endpoints
+# -----------------------------
 @app.post("/assess", response_model=DealSummaryResponse)
 def assess_deal(payload: DealInputRequest):
-    deal = build_deal_summary(payload)
-    return deal.to_dict()
+    return build_deal_summary(payload)
 
 
 @app.post("/api/score")
-def score(p: ScoreIn):
-    loan_amnt = _fnum(p.loan_amnt)
-    int_rate = _fnum(p.int_rate)
-    dti = _fnum(p.dti)
-    annual_inc = _fnum(p.annual_inc)
-    term_val = 60 if _fint(p.term) >= 60 else 36
-    grade_chr = (p.grade or "B").strip().upper()[0]
-    revol_util = _fnum(p.revol_util)
-    delinq_2yrs = _fint(p.delinq_2yrs)
-    open_acc = _fint(p.open_acc)
+def score(payload: Dict[str, Any]):
+    return {
+        "pd": 0.08,
+        "feats": [],
+        "model_version": "stub-0.1",
+        "note": "Placeholder. Use /assess for deal readiness.",
+    }
 
-    if USE_REAL and BOOSTER is not None:
-        class _Q:
-            pass
 
-        q = _Q()
-        q.loan_amnt = loan_amnt
-        q.int_rate = int_rate
-        q.dti = dti
-        q.annual_inc = annual_inc
-        q.term = term_val
-        q.grade = grade_chr
-        q.revol_util = revol_util
-        q.delinq_2yrs = delinq_2yrs
-        q.open_acc = open_acc
+# -----------------------------
+# Step 2: AI hardening (never 500)
+# -----------------------------
+def _deal_to_brief(deal_any: Any) -> str:
+    deal = _to_dict(deal_any)
 
-        X = build_row(q)
-        y = BOOSTER.predict(X)
-        pd_hat = float(np.clip(y[0], 0.0, 1.0))
+    client = deal.get("client_name", "")
+    sector = deal.get("sector", "")
+    rating = deal.get("rating_anchor", {}) or {}
+    elig = deal.get("eligibility", {}) or {}
+    fs = deal.get("financial_signals", {}) or {}
+    dr = deal.get("deal_readiness", {}) or {}
 
-        feats = []
-        if EXPLAINER is not None:
-            shap_vals = EXPLAINER.shap_values(X)
-            if isinstance(shap_vals, list):
-                shap_vals = shap_vals[-1]
-            sv = shap_vals[0]
-            feats = [{"name": n, "value": float(abs(v))} for n, v in zip(list(X.columns), sv)]
-        else:
-            gains = BOOSTER.feature_importance(importance_type="gain")
-            names = BOOSTER.feature_name() or list(X.columns)
-            feats = [{"name": n, "value": float(g)} for n, g in zip(names, gains)]
-
-        feats.sort(key=lambda d: d["value"], reverse=True)
-        return {"pd": pd_hat, "feats": feats[:7], "model_version": "real-lightgbm"}
-
-    # MOCK fallback
-    gmap = dict(A=0, B=1, C=2, D=3, E=4, F=5, G=6)
-    w = dict(
-        intercept=-2.0,
-        int_rate=0.15,
-        dti=0.04,
-        annual_inc=-0.000002,
-        term=0.2,
-        grade=0.18,
-        revol_util=0.01,
-        delinq_2yrs=0.25,
-        open_acc=-0.02,
-        loan_amnt=0.000002,
+    lines: List[str] = []
+    lines.append(f"Client: {client}")
+    lines.append(f"Sector: {sector}")
+    lines.append(
+        f"Rating: {rating.get('system','')} {rating.get('grade','')} "
+        f"(Outlook: {rating.get('outlook','')})"
     )
-    x = (
-        w["intercept"]
-        + w["int_rate"] * int_rate
-        + w["dti"] * dti
-        + w["annual_inc"] * annual_inc
-        + w["term"] * (1 if term_val == 60 else 0)
-        + w["grade"] * gmap[grade_chr]
-        + w["revol_util"] * revol_util
-        + w["delinq_2yrs"] * delinq_2yrs
-        + w["open_acc"] * open_acc
-        + w["loan_amnt"] * loan_amnt
+    lines.append(
+        f"Eligibility score: {elig.get('score','')}; Drivers: {', '.join(elig.get('drivers', []) or [])}"
     )
-    pd_hat = 1 / (1 + math.exp(-x))
-    feats = [
-        {"name": "Interest rate (%)", "value": abs(w["int_rate"] * int_rate)},
-        {"name": "Debt-to-income (%)", "value": abs(w["dti"] * dti)},
-        {"name": "Term (60m flag)", "value": abs(w["term"] * (1 if term_val == 60 else 0))},
-        {"name": "Grade (A→G)", "value": abs(w["grade"] * gmap[grade_chr])},
-        {"name": "Revolving util (%)", "value": abs(w["revol_util"] * revol_util)},
-        {"name": "Annual income (AED)", "value": abs(w["annual_inc"] * annual_inc)},
-        {"name": "Delinq in 2 yrs", "value": abs(w["delinq_2yrs"] * delinq_2yrs)},
-        {"name": "Open accounts", "value": abs(w["open_acc"] * open_acc)},
-        {"name": "Loan amount (AED)", "value": abs(w["loan_amnt"] * loan_amnt)},
-    ]
-    feats.sort(key=lambda d: d["value"], reverse=True)
-    return {"pd": float(pd_hat), "feats": feats[:7], "model_version": "demo-mock"}
+    lines.append(
+        "Financial signals: "
+        f"Revenue={fs.get('revenue_trend_3y','')}, "
+        f"Margin={fs.get('margin_trend_3y','')}, "
+        f"Leverage={fs.get('leverage_position','')}, "
+        f"Cashflow={fs.get('cashflow_quality','')}, "
+        f"Volatility={fs.get('earnings_volatility','')}, "
+        f"Capex={fs.get('capex_growth_investment','')}, "
+        f"Transparency={fs.get('financial_transparency','')}"
+    )
+    lines.append(
+        f"Deal readiness: {dr.get('status','')}; "
+        f"Constraints: {', '.join(dr.get('constraints', []) or [])}; "
+        f"Strengths: {', '.join(dr.get('strengths', []) or [])}"
+    )
+    lines.append(f"Mandate fit summary: {deal.get('mandate_fit_summary','')}")
+    lines.append(f"RM actions: {', '.join(deal.get('rm_actions', []) or [])}")
+
+    return "\n".join(lines)
 
 
-# ===============================
-# AI: Q&A
-# ===============================
+def _fallback_ai_qa(question: str, deal_any: Any) -> str:
+    deal = _to_dict(deal_any)
+
+    q = (question or "").strip().lower()
+    dr = deal.get("deal_readiness", {}) or {}
+    status = dr.get("status", "Conditional")
+    constraints = dr.get("constraints", []) or []
+    actions = deal.get("rm_actions", []) or []
+    summary = deal.get("mandate_fit_summary", "")
+
+    if "next" in q or "do i do" in q or "do next" in q:
+        bullets: List[str] = []
+        if constraints:
+            bullets.append("Address constraints:")
+            bullets += [f"- {c}" for c in constraints]
+        if actions:
+            bullets.append("RM next steps:")
+            bullets += [f"- {a}" for a in actions]
+        if not bullets:
+            bullets = [
+                "- Validate inputs (rating, eligibility, financial signals).",
+                "- Proceed to detailed credit memo and structuring.",
+            ]
+        return f"Status: {status}\n{summary}\n\n" + "\n".join(bullets)
+
+    return (
+        f"Status: {status}\n"
+        f"{summary}\n\n"
+        f"Constraints: {', '.join(constraints) if constraints else 'None flagged'}\n"
+        f"RM actions: {', '.join(actions) if actions else 'None suggested'}"
+    )
+
+
+def _fallback_ai_explain(deal_any: Any) -> Dict[str, Any]:
+    deal = _to_dict(deal_any)
+
+    dr = deal.get("deal_readiness", {}) or {}
+    status = dr.get("status", "Conditional")
+    constraints = dr.get("constraints", []) or []
+    actions = deal.get("rm_actions", []) or []
+    summary = deal.get("mandate_fit_summary", "")
+
+    exec_summary = f"{summary} Readiness is assessed as {status}."
+    key_risks = constraints if constraints else ["No major constraints flagged based on provided inputs."]
+    talking = actions if actions else ["Confirm rating anchor details and obtain supporting documentation."]
+
+    return {
+        "executive_summary": exec_summary,
+        "key_risks_explained": key_risks,
+        "rm_talking_points": talking,
+    }
+
+
 @app.post("/ai/qa", response_model=AIQAResponse)
 def ai_qa(payload: AIQARequest):
-    if oa_client is None:
-        return AIQAResponse(
-            answer="AI not configured. Set OPENAI_API_KEY to enable AI responses.",
-            disclaimer=DISCLAIMER,
-        )
+    # IMPORTANT: payload.deal_summary can be DealSummaryResponse (Pydantic) or None
+    deal_any = payload.deal_summary
+    safe_answer = _fallback_ai_qa(payload.question, deal_any)
 
-    try:
-        # If your schema uses `question`, this works; if it's `query`, adjust here.
-        user_q = getattr(payload, "question", None) or getattr(payload, "query", None) or ""
+    # Optional AI enhancement
+    answer = safe_answer
+    if oa_client is not None:
+        try:
+            prompt_text = (
+                "You are a Corporate RM assistant at a bank. "
+                "Answer concisely in actionable RM terms.\n\n"
+                f"DEAL SUMMARY:\n{_deal_to_brief(deal_any)}\n"
+                f"QUESTION: {payload.question}\n"
+            )
+            r = oa_client.responses.create(model=MODEL_NAME, input=prompt_text)
+            if getattr(r, "output_text", None):
+                answer = r.output_text.strip()
+        except RateLimitError:
+            answer = safe_answer + "\n\n(Note: AI enhancement temporarily unavailable due to rate limit.)"
+        except Exception as e:
+            answer = safe_answer + f"\n\n(Note: AI enhancement unavailable: {type(e).__name__}.)"
 
-        r = oa_client.responses.create(
-            model=MODEL_NAME,
-            input=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a corporate banking RM copilot. "
-                        "Give practical next steps and clarify missing info. "
-                        "Be concise and actionable."
-                    ),
-                },
-                {"role": "user", "content": user_q},
-            ],
-        )
-
-        return AIQAResponse(answer=r.output_text, disclaimer=DISCLAIMER)
-
-    except RateLimitError:
-        return AIQAResponse(answer="AI temporarily unavailable (rate limit).", disclaimer=DISCLAIMER)
-    except Exception as e:
-        return AIQAResponse(answer=f"AI error: {type(e).__name__}", disclaimer=DISCLAIMER)
+    return AIQAResponse(answer=answer, disclaimer=DISCLAIMER)
 
 
-# ===============================
-# AI: Explain deal
-# ===============================
 @app.post("/ai/explain", response_model=AIExplainResponse)
 def ai_explain(payload: AIExplainRequest):
-    if oa_client is None:
-        return AIExplainResponse(
-            executive_summary="AI not configured. Set OPENAI_API_KEY to enable explanations.",
-            key_risks_explained=[],
-            rm_talking_points=[],
-            disclaimer=DISCLAIMER,
-        )
+    deal_any = payload.deal_summary
+    fb = _fallback_ai_explain(deal_any)
 
-    # Accept either a nested object or a dict, depending on your schema
-    deal_obj = getattr(payload, "deal_summary", None) or getattr(payload, "deal", None) or payload
-    try:
-        deal_dict = deal_obj.model_dump() if hasattr(deal_obj, "model_dump") else dict(deal_obj)
-    except Exception:
-        deal_dict = {"deal": str(deal_obj)}
+    executive_summary = fb["executive_summary"]
+    key_risks_explained = fb["key_risks_explained"]
+    rm_talking_points = fb["rm_talking_points"]
 
-    prompt = (
-        "Explain the deal in RM-friendly terms.\n\n"
-        "1) Executive summary (2-3 lines)\n"
-        "2) Key risks explained (bullets)\n"
-        "3) RM talking points (bullets)\n\n"
-        f"Deal data:\n{deal_dict}"
+    # Optional AI enhancement (safe)
+    if oa_client is not None:
+        try:
+            prompt_text = (
+                "You are a bank credit/RM assistant. "
+                "Write a short executive summary (3-5 lines) and 5 RM talking points.\n\n"
+                f"DEAL SUMMARY:\n{_deal_to_brief(deal_any)}\n"
+            )
+            r = oa_client.responses.create(model=MODEL_NAME, input=prompt_text)
+            if getattr(r, "output_text", None):
+                executive_summary = r.output_text.strip()
+        except Exception:
+            pass
+
+    return AIExplainResponse(
+        executive_summary=executive_summary,
+        key_risks_explained=key_risks_explained,
+        rm_talking_points=rm_talking_points,
+        disclaimer=DISCLAIMER,
     )
 
-    try:
-        r = oa_client.responses.create(
-            model=MODEL_NAME,
-            input=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a corporate credit/risk assistant. "
-                        "Do not invent facts not present in the deal data. "
-                        "If information is missing, say what is missing."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
-        )
 
-        # Minimal safe parse: keep everything in exec summary, leave lists empty (you can improve later)
-        return AIExplainResponse(
-            executive_summary=r.output_text,
-            key_risks_explained=[],
-            rm_talking_points=[],
-            disclaimer=DISCLAIMER,
-        )
-
-    except RateLimitError:
-        return AIExplainResponse(
-            executive_summary="AI temporarily unavailable (rate limit).",
-            key_risks_explained=[],
-            rm_talking_points=[],
-            disclaimer=DISCLAIMER,
-        )
-    except Exception as e:
-        return AIExplainResponse(
-            executive_summary=f"AI error: {type(e).__name__}",
-            key_risks_explained=[],
-            rm_talking_points=[],
-            disclaimer=DISCLAIMER,
-        )
-
-
-# ---------- SPA (serve built frontend if present) ----------
+# -----------------------------
+# SPA serving (optional)
+# Looks for: api/static/index.html
+# -----------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 INDEX_HTML = os.path.join(STATIC_DIR, "index.html")
 

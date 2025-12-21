@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Any
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -90,46 +90,15 @@ class DealSummaryResponse(BaseModel):
     created_at: Optional[date] = None
     notes: Optional[str] = None
 
-from pydantic import BaseModel, Field
-from typing import List
-
-# ===============================
-# AI Explain 
-# ===============================
-
-class AIExplainResponse(BaseModel):
-    executive_summary: str
-    key_risks_explained: List[str] = []
-    rm_talking_points: List[str] = []
-    disclaimer: str
-
-# --- AI: Q&A ---
-class AIQARequest(BaseModel):
-    deal_summary: Optional["DealSummaryResponse"] = None
-    question: str
-
-class AIQAResponse(BaseModel):
-    answer: str
-    disclaimer: str
 
 # ===============================
 # AI schemas (Explain + Q&A)
 # ===============================
 
-class AIExplainRequest(BaseModel):
-    deal_summary: dict
-
-
-class AIExplainResponse(BaseModel):
-    executive_summary: str
-    key_risks_explained: list[str]
-    rm_talking_points: list[str]
-    disclaimer: str
-
-
 class AIQARequest(BaseModel):
-    question: str
-    deal_summary: dict | None = None
+    question: str = Field(..., description="User question about the deal summary.")
+    # Frontend should pass the /assess response here so AI can be grounded
+    deal_summary: Optional[DealSummaryResponse] = None
 
 
 class AIQAResponse(BaseModel):
@@ -137,3 +106,13 @@ class AIQAResponse(BaseModel):
     disclaimer: str
 
 
+class AIExplainRequest(BaseModel):
+    # Frontend should pass the /assess response here
+    deal_summary: DealSummaryResponse
+
+
+class AIExplainResponse(BaseModel):
+    executive_summary: str
+    key_risks_explained: List[str] = Field(default_factory=list)
+    rm_talking_points: List[str] = Field(default_factory=list)
+    disclaimer: str
