@@ -97,22 +97,18 @@ class DealSummaryResponse(BaseModel):
 
 class AIQARequest(BaseModel):
     question: str = Field(..., description="User question about the deal summary.")
-    # Frontend should pass the /assess response here so AI can be grounded
     deal_summary: Optional[DealSummaryResponse] = None
-
 
 class AIQAResponse(BaseModel):
     answer: str
     disclaimer: str
 
-
 class AIExplainRequest(BaseModel):
-    # Frontend should pass the /assess response here
     deal_summary: DealSummaryResponse
-
 
 class AIExplainResponse(BaseModel):
     executive_summary: str
     key_risks_explained: List[str] = Field(default_factory=list)
     rm_talking_points: List[str] = Field(default_factory=list)
     disclaimer: str
+
