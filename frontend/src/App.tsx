@@ -1,10 +1,11 @@
 // frontend/src/App.tsx
 import React, { useMemo, useState } from "react";
 
-// Use same-origin paths. Vite should proxy /assess and /ai -> backend (see note below).
-const ASSESS_URL = import.meta.env.VITE_ASSESS_URL || "/assess";
-const AI_EXPLAIN_URL = import.meta.env.VITE_AI_EXPLAIN_URL || "/ai/explain";
-const AI_QA_URL = import.meta.env.VITE_AI_QA_URL || "/ai/qa";
+// Uses Vite proxy if configured (vite.config.ts), otherwise set VITE_API_URL=http://127.0.0.1:8000
+const API_BASE = import.meta.env.VITE_API_URL || ""; // keep "" to use same-origin proxy
+const ASSESS_URL = `${API_BASE}/assess`;
+const AI_EXPLAIN_URL = `${API_BASE}/ai/explain`;
+const AI_QA_URL = `${API_BASE}/ai/qa`;
 
 type Sector =
   | "Manufacturing"
@@ -46,10 +47,33 @@ type Form = {
   notes: string;
 };
 
-type DealSummaryOut = {
+type DealSummaryResponse = {
   client_name: string;
   group_name?: string | null;
-  sector: string;
+  sector: Sector;
+
+  rating_anchor: {
+    system: string;
+    grade: string;
+    outlook?: string | null;
+    as_of?: string | null;
+  };
+
+  eligibility: {
+    score: number;
+    drivers: string[];
+    breakdown?: Record<string, number>;
+  };
+
+  financial_signals: {
+    revenue_trend_3y: Trend3Y;
+    margin_trend_3y: MarginTrend;
+    leverage_position: Leverage;
+    cashflow_quality: Signal3;
+    earnings_volatility: Volatility;
+    capex_growth_investment: Investment;
+    financial_transparency: Signal3;
+  };
 
   deal_readiness: {
     status: Readiness;
@@ -57,10 +81,12 @@ type DealSummaryOut = {
     constraints: string[];
   };
 
+  mandate_fit_summary: string;
   rm_actions: string[];
   talking_points: string[];
 
-  mandate_fit_summary: string;
+  notes?: string | null;
+  created_at?: string | null;
 };
 
 type AIExplainOut = {
@@ -119,7 +145,6 @@ function Badge({ status }: { status: Readiness }) {
       : status === "Conditional"
       ? "#a56500"
       : "#b3261e";
-
   return (
     <span
       style={{
@@ -138,11 +163,21 @@ function Badge({ status }: { status: Readiness }) {
   );
 }
 
-function asCommaList(s: string): string[] {
-  return (s || "")
-    .split(",")
-    .map((x) => x.trim())
-    .filter(Boolean);
+function SmallCard({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div style={{ border: "1px solid #e5e5e5", borderRadius: 10, padding: 12 }}>
+      <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>
+        {title}
+      </div>
+      {children}
+    </div>
+  );
 }
 
 export default function App() {
@@ -170,17 +205,20 @@ export default function App() {
     notes: "",
   });
 
-  // --- core output ---
-  const [result, setResult] = useState<DealSummaryOut | null>(null);
+  const [result, setResult] = useState<DealSummaryResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // --- AI output ---
+  // AI: Explain
   const [aiExplain, setAiExplain] = useState<AIExplainOut | null>(null);
-  const [aiAnswer, setAiAnswer] = useState<AIQAOut | null>(null);
+  const [aiExplainLoading, setAiExplainLoading] = useState(false);
+  const [aiExplainError, setAiExplainError] = useState<string | null>(null);
+
+  // AI: Q&A
   const [question, setQuestion] = useState("");
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiAnswer, setAiAnswer] = useState<AIQAOut | null>(null);
+  const [aiQaLoading, setAiQaLoading] = useState(false);
+  const [aiQaError, setAiQaError] = useState<string | null>(null);
 
   const canSubmit = useMemo(() => {
     return (
@@ -191,78 +229,80 @@ export default function App() {
     );
   }, [form]);
 
-  function buildAssessPayload() {
-    return {
-      client_name: form.client_name,
-      group_name: form.group_name?.trim() ? form.group_name : null,
-      sector: form.sector,
-
-      rating_anchor: {
-        system: form.rating_system,
-        grade: form.rating_grade,
-        outlook: form.rating_outlook?.trim() ? form.rating_outlook : null,
-        as_of: form.rating_as_of?.trim() ? form.rating_as_of : null,
-      },
-
-      eligibility: {
-        score: Number(form.eligibility_score),
-        drivers: asCommaList(form.eligibility_drivers),
-        breakdown: {},
-      },
-
-      financial_signals: {
-        revenue_trend_3y: form.revenue_trend_3y,
-        margin_trend_3y: form.margin_trend_3y,
-        leverage_position: form.leverage_position,
-        cashflow_quality: form.cashflow_quality,
-        earnings_volatility: form.earnings_volatility,
-        capex_growth_investment: form.capex_growth_investment,
-        financial_transparency: form.financial_transparency,
-      },
-
-      notes: form.notes?.trim() ? form.notes : null,
-    };
-  }
-
   async function onAssess() {
     setError(null);
     setLoading(true);
     setResult(null);
 
-    // clear AI outputs when reassessing
+    // reset AI panels whenever we re-assess
     setAiExplain(null);
+    setAiExplainError(null);
     setAiAnswer(null);
-    setAiError(null);
+    setAiQaError(null);
 
     try {
       const resp = await fetch(ASSESS_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildAssessPayload()),
+        body: JSON.stringify({
+          client_name: form.client_name,
+          group_name: form.group_name || null,
+          sector: form.sector,
+
+          rating_anchor: {
+            system: form.rating_system,
+            grade: form.rating_grade,
+            outlook: form.rating_outlook || null,
+            as_of: form.rating_as_of || null,
+          },
+
+          eligibility: {
+            score: Number(form.eligibility_score),
+            drivers: (form.eligibility_drivers || "")
+              .split(",")
+              .map((s: string) => s.trim())
+              .filter(Boolean),
+            breakdown: {},
+          },
+
+          financial_signals: {
+            revenue_trend_3y: form.revenue_trend_3y,
+            margin_trend_3y: form.margin_trend_3y,
+            leverage_position: form.leverage_position,
+            cashflow_quality: form.cashflow_quality,
+            earnings_volatility: form.earnings_volatility,
+            capex_growth_investment: form.capex_growth_investment,
+            financial_transparency: form.financial_transparency,
+          },
+
+          notes: form.notes || null,
+        }),
       });
 
       if (!resp.ok) {
         const txt = await resp.text().catch(() => "");
-        throw new Error(`Assess failed (${resp.status})${txt ? `: ${txt}` : ""}`);
+        throw new Error(`API error ${resp.status}${txt ? `: ${txt}` : ""}`);
       }
 
-      const out: DealSummaryOut = await resp.json();
+      const out: DealSummaryResponse = await resp.json();
       setResult(out);
     } catch (e: any) {
-      setError(e?.message || "Assess request failed");
+      setError(e?.message || "Request failed");
     } finally {
       setLoading(false);
     }
   }
 
-  async function onExplainAI() {
-    setAiError(null);
-    setAiLoading(true);
+  async function onAIExplain() {
+    if (!result) {
+      setAiExplainError("Run /assess first.");
+      return;
+    }
+    setAiExplainError(null);
+    setAiExplainLoading(true);
     setAiExplain(null);
 
     try {
-      if (!result) throw new Error("Run 'Assess deal' first.");
-
       const resp = await fetch(AI_EXPLAIN_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -271,55 +311,51 @@ export default function App() {
 
       if (!resp.ok) {
         const txt = await resp.text().catch(() => "");
-        throw new Error(`AI explain failed (${resp.status})${txt ? `: ${txt}` : ""}`);
+        throw new Error(`AI error ${resp.status}${txt ? `: ${txt}` : ""}`);
       }
 
       const out: AIExplainOut = await resp.json();
       setAiExplain(out);
     } catch (e: any) {
-      setAiError(e?.message || "AI explain request failed");
+      setAiExplainError(e?.message || "AI explain failed");
     } finally {
-      setAiLoading(false);
+      setAiExplainLoading(false);
     }
   }
 
-  async function onAskAI() {
-    setAiError(null);
-    setAiLoading(true);
+  async function onAIQA() {
+    if (!question.trim()) {
+      setAiQaError("Enter a question.");
+      return;
+    }
+
+    setAiQaError(null);
+    setAiQaLoading(true);
     setAiAnswer(null);
 
     try {
-      if (!result) throw new Error("Run 'Assess deal' first.");
-      const q = question.trim();
-      if (!q) throw new Error("Enter a question first.");
-
       const resp = await fetch(AI_QA_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ deal_summary: result, question: q }),
+        body: JSON.stringify({
+          question: question.trim(),
+          // important: send the deal summary when available
+          deal_summary: result ?? null,
+        }),
       });
 
       if (!resp.ok) {
         const txt = await resp.text().catch(() => "");
-        throw new Error(`AI Q&A failed (${resp.status})${txt ? `: ${txt}` : ""}`);
+        throw new Error(`AI error ${resp.status}${txt ? `: ${txt}` : ""}`);
       }
 
       const out: AIQAOut = await resp.json();
       setAiAnswer(out);
     } catch (e: any) {
-      setAiError(e?.message || "AI Q&A request failed");
+      setAiQaError(e?.message || "AI Q&A failed");
     } finally {
-      setAiLoading(false);
+      setAiQaLoading(false);
     }
-  }
-
-  function clearAll() {
-    setResult(null);
-    setError(null);
-    setAiExplain(null);
-    setAiAnswer(null);
-    setAiError(null);
-    setQuestion("");
   }
 
   return (
@@ -328,8 +364,7 @@ export default function App() {
         Corporate RM Deal Readiness & Mandate Fit Assistant
       </div>
       <div style={{ fontSize: 13, color: "#666", marginTop: 6 }}>
-        Front-office decision support. Interprets existing ratings, eligibility, sector alignment, and RM-friendly
-        financial signals.
+        /assess + AI explain + deal Q&amp;A
       </div>
 
       <div
@@ -342,7 +377,13 @@ export default function App() {
         }}
       >
         {/* LEFT: INPUTS */}
-        <div style={{ border: "1px solid #e5e5e5", borderRadius: 10, padding: 16 }}>
+        <div
+          style={{
+            border: "1px solid #e5e5e5",
+            borderRadius: 10,
+            padding: 16,
+          }}
+        >
           <SectionTitle>Client</SectionTitle>
 
           <FieldRow
@@ -350,7 +391,9 @@ export default function App() {
             input={
               <input
                 value={form.client_name}
-                onChange={(e) => setForm({ ...form, client_name: e.target.value })}
+                onChange={(e) =>
+                  setForm({ ...form, client_name: e.target.value })
+                }
                 style={{ width: "100%", padding: 8 }}
                 placeholder="e.g., ABC Manufacturing LLC"
               />
@@ -374,7 +417,9 @@ export default function App() {
             input={
               <select
                 value={form.sector}
-                onChange={(e) => setForm({ ...form, sector: e.target.value as Sector })}
+                onChange={(e) =>
+                  setForm({ ...form, sector: e.target.value as Sector })
+                }
                 style={{ width: "100%", padding: 8 }}
               >
                 <option>Manufacturing</option>
@@ -394,7 +439,9 @@ export default function App() {
             input={
               <select
                 value={form.rating_system}
-                onChange={(e) => setForm({ ...form, rating_system: e.target.value })}
+                onChange={(e) =>
+                  setForm({ ...form, rating_system: e.target.value })
+                }
                 style={{ width: "100%", padding: 8 }}
               >
                 <option>Credit Lens</option>
@@ -408,9 +455,11 @@ export default function App() {
             input={
               <input
                 value={form.rating_grade}
-                onChange={(e) => setForm({ ...form, rating_grade: e.target.value })}
+                onChange={(e) =>
+                  setForm({ ...form, rating_grade: e.target.value })
+                }
                 style={{ width: "100%", padding: 8 }}
-                placeholder="e.g., Baa3 / 6 / BB- (as per system)"
+                placeholder="e.g., Baa3 / 6 / BB-"
               />
             }
           />
@@ -420,7 +469,9 @@ export default function App() {
             input={
               <input
                 value={form.rating_outlook}
-                onChange={(e) => setForm({ ...form, rating_outlook: e.target.value })}
+                onChange={(e) =>
+                  setForm({ ...form, rating_outlook: e.target.value })
+                }
                 style={{ width: "100%", padding: 8 }}
                 placeholder="Stable / Negative / Positive"
               />
@@ -432,7 +483,9 @@ export default function App() {
             input={
               <input
                 value={form.rating_as_of}
-                onChange={(e) => setForm({ ...form, rating_as_of: e.target.value })}
+                onChange={(e) =>
+                  setForm({ ...form, rating_as_of: e.target.value })
+                }
                 style={{ width: "100%", padding: 8 }}
                 placeholder="Optional"
               />
@@ -450,7 +503,9 @@ export default function App() {
                 max={6}
                 step={0.1}
                 value={form.eligibility_score}
-                onChange={(e) => setForm({ ...form, eligibility_score: Number(e.target.value) })}
+                onChange={(e) =>
+                  setForm({ ...form, eligibility_score: Number(e.target.value) })
+                }
                 style={{ width: "100%", padding: 8 }}
               />
             }
@@ -461,7 +516,9 @@ export default function App() {
             input={
               <input
                 value={form.eligibility_drivers}
-                onChange={(e) => setForm({ ...form, eligibility_drivers: e.target.value })}
+                onChange={(e) =>
+                  setForm({ ...form, eligibility_drivers: e.target.value })
+                }
                 style={{ width: "100%", padding: 8 }}
                 placeholder="e.g., Job creation, Exports, ICV"
               />
@@ -475,7 +532,12 @@ export default function App() {
             input={
               <select
                 value={form.revenue_trend_3y}
-                onChange={(e) => setForm({ ...form, revenue_trend_3y: e.target.value as Trend3Y })}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    revenue_trend_3y: e.target.value as Trend3Y,
+                  })
+                }
                 style={{ width: "100%", padding: 8 }}
               >
                 <option>Improving</option>
@@ -490,7 +552,12 @@ export default function App() {
             input={
               <select
                 value={form.margin_trend_3y}
-                onChange={(e) => setForm({ ...form, margin_trend_3y: e.target.value as MarginTrend })}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    margin_trend_3y: e.target.value as MarginTrend,
+                  })
+                }
                 style={{ width: "100%", padding: 8 }}
               >
                 <option>Improving</option>
@@ -505,7 +572,12 @@ export default function App() {
             input={
               <select
                 value={form.leverage_position}
-                onChange={(e) => setForm({ ...form, leverage_position: e.target.value as Leverage })}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    leverage_position: e.target.value as Leverage,
+                  })
+                }
                 style={{ width: "100%", padding: 8 }}
               >
                 <option>Low</option>
@@ -520,7 +592,12 @@ export default function App() {
             input={
               <select
                 value={form.cashflow_quality}
-                onChange={(e) => setForm({ ...form, cashflow_quality: e.target.value as Signal3 })}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    cashflow_quality: e.target.value as Signal3,
+                  })
+                }
                 style={{ width: "100%", padding: 8 }}
               >
                 <option>Strong</option>
@@ -535,7 +612,12 @@ export default function App() {
             input={
               <select
                 value={form.earnings_volatility}
-                onChange={(e) => setForm({ ...form, earnings_volatility: e.target.value as Volatility })}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    earnings_volatility: e.target.value as Volatility,
+                  })
+                }
                 style={{ width: "100%", padding: 8 }}
               >
                 <option>Low</option>
@@ -551,7 +633,10 @@ export default function App() {
               <select
                 value={form.capex_growth_investment}
                 onChange={(e) =>
-                  setForm({ ...form, capex_growth_investment: e.target.value as Investment })
+                  setForm({
+                    ...form,
+                    capex_growth_investment: e.target.value as Investment,
+                  })
                 }
                 style={{ width: "100%", padding: 8 }}
               >
@@ -568,7 +653,10 @@ export default function App() {
               <select
                 value={form.financial_transparency}
                 onChange={(e) =>
-                  setForm({ ...form, financial_transparency: e.target.value as Signal3 })
+                  setForm({
+                    ...form,
+                    financial_transparency: e.target.value as Signal3,
+                  })
                 }
                 style={{ width: "100%", padding: 8 }}
               >
@@ -605,208 +693,280 @@ export default function App() {
             </button>
 
             <button
-              onClick={clearAll}
+              onClick={() => {
+                setResult(null);
+                setAiExplain(null);
+                setAiExplainError(null);
+                setAiAnswer(null);
+                setAiQaError(null);
+                setError(null);
+              }}
               style={{
                 padding: "10px 14px",
                 borderRadius: 8,
                 border: "1px solid #ccc",
                 background: "#fff",
                 cursor: "pointer",
-                fontWeight: 700,
               }}
             >
-              Clear
+              Clear result
             </button>
           </div>
 
-          {error && <div style={{ marginTop: 12, color: "#b3261e", fontSize: 13 }}>{error}</div>}
+          {error && (
+            <div style={{ marginTop: 12, color: "#b3261e", fontSize: 13 }}>
+              {error}
+            </div>
+          )}
+
+          <div style={{ marginTop: 14, fontSize: 12, color: "#666" }}>
+            Backend endpoints (frontend calls):
+            <div>
+              <code>{ASSESS_URL || "/assess"}</code>,{" "}
+              <code>{AI_EXPLAIN_URL || "/ai/explain"}</code>,{" "}
+              <code>{AI_QA_URL || "/ai/qa"}</code>
+            </div>
+          </div>
         </div>
 
         {/* RIGHT: OUTPUTS */}
-        <div style={{ border: "1px solid #e5e5e5", borderRadius: 10, padding: 16 }}>
-          <SectionTitle>Output</SectionTitle>
-
-          {!result ? (
-            <div style={{ fontSize: 13, color: "#666" }}>
-              Run an assessment to see deal readiness, constraints, and RM actions.
-            </div>
-          ) : (
-            <>
-              {/* Status */}
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-                <div>
-                  <div style={{ fontSize: 12, color: "#666" }}>Deal readiness</div>
-                  <div style={{ marginTop: 6 }}>
-                    <Badge status={result.deal_readiness.status} />
+        <div style={{ display: "grid", gap: 14 }}>
+          <SmallCard title="Assessment output">
+            {!result ? (
+              <div style={{ fontSize: 13, color: "#666" }}>
+                Run an assessment to see deal readiness, constraints, and RM actions.
+              </div>
+            ) : (
+              <>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 12, color: "#666" }}>Deal readiness</div>
+                    <div style={{ marginTop: 6 }}>
+                      <Badge status={result.deal_readiness.status} />
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontSize: 12, color: "#666" }}>Client</div>
+                    <div style={{ fontSize: 13, fontWeight: 800 }}>
+                      {result.client_name}
+                    </div>
+                    {result.group_name ? (
+                      <div style={{ fontSize: 12, color: "#666" }}>
+                        {result.group_name}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
-                <div style={{ textAlign: "right" }}>
-                  <div style={{ fontSize: 12, color: "#666" }}>Client</div>
-                  <div style={{ fontSize: 13, fontWeight: 800 }}>{result.client_name}</div>
-                  {result.group_name ? (
-                    <div style={{ fontSize: 12, color: "#666" }}>{result.group_name}</div>
-                  ) : null}
+
+                <div style={{ marginTop: 12, fontSize: 13 }}>
+                  <div style={{ fontWeight: 800, marginBottom: 6 }}>
+                    Mandate fit summary
+                  </div>
+                  <div style={{ color: "#333" }}>{result.mandate_fit_summary}</div>
                 </div>
-              </div>
 
-              {/* Mandate fit summary */}
-              <div style={{ marginTop: 12, fontSize: 13 }}>
-                <div style={{ fontWeight: 800, marginBottom: 6 }}>Mandate fit summary</div>
-                <div style={{ color: "#333" }}>{result.mandate_fit_summary}</div>
-              </div>
-
-              {/* Constraints */}
-              <div style={{ marginTop: 14 }}>
-                <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 6 }}>Constraints</div>
-                {result.deal_readiness.constraints?.length ? (
-                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-                    {result.deal_readiness.constraints.map((c, idx) => (
-                      <li key={idx} style={{ marginBottom: 6 }}>
-                        {c}
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <div style={{ fontSize: 13, color: "#666" }}>None identified.</div>
-                )}
-              </div>
-
-              {/* RM actions */}
-              <div style={{ marginTop: 14 }}>
-                <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 6 }}>RM actions</div>
-                {result.rm_actions?.length ? (
-                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-                    {result.rm_actions.map((a, idx) => (
-                      <li key={idx} style={{ marginBottom: 6 }}>
-                        {a}
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <div style={{ fontSize: 13, color: "#666" }}>No actions suggested.</div>
-                )}
-              </div>
-
-              {/* Talking points */}
-              <div style={{ marginTop: 14 }}>
-                <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 6 }}>Talking points</div>
-                {result.talking_points?.length ? (
-                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-                    {result.talking_points.map((t, idx) => (
-                      <li key={idx} style={{ marginBottom: 6 }}>
-                        {t}
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <div style={{ fontSize: 13, color: "#666" }}>None.</div>
-                )}
-              </div>
-
-              {/* AI actions */}
-              <SectionTitle>AI</SectionTitle>
-
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <button
-                  onClick={onExplainAI}
-                  disabled={aiLoading}
-                  style={{
-                    padding: "10px 14px",
-                    borderRadius: 8,
-                    border: "1px solid #111",
-                    background: aiLoading ? "#eee" : "#fff",
-                    cursor: aiLoading ? "not-allowed" : "pointer",
-                    fontWeight: 800,
-                  }}
-                >
-                  {aiLoading ? "Working..." : "Explain deal (AI)"}
-                </button>
-              </div>
-
-              <div style={{ marginTop: 12 }}>
-                <div style={{ fontSize: 12, color: "#666", marginBottom: 6 }}>Ask a question</div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <input
-                    value={question}
-                    onChange={(e) => setQuestion(e.target.value)}
-                    style={{ width: "100%", padding: 8 }}
-                    placeholder="e.g., Why is this Conditional? What should I do next?"
-                  />
-                  <button
-                    onClick={onAskAI}
-                    disabled={aiLoading}
-                    style={{
-                      padding: "10px 14px",
-                      borderRadius: 8,
-                      border: "1px solid #111",
-                      background: "#111",
-                      color: "#fff",
-                      cursor: aiLoading ? "not-allowed" : "pointer",
-                      fontWeight: 800,
-                    }}
-                  >
-                    Ask
-                  </button>
+                <div style={{ marginTop: 14 }}>
+                  <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 6 }}>
+                    Constraints
+                  </div>
+                  {result.deal_readiness.constraints?.length ? (
+                    <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+                      {result.deal_readiness.constraints.map((c, idx) => (
+                        <li key={idx} style={{ marginBottom: 6 }}>
+                          {c}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div style={{ fontSize: 13, color: "#666" }}>None identified.</div>
+                  )}
                 </div>
+
+                <div style={{ marginTop: 14 }}>
+                  <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 6 }}>
+                    RM actions
+                  </div>
+                  {result.rm_actions?.length ? (
+                    <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+                      {result.rm_actions.map((a, idx) => (
+                        <li key={idx} style={{ marginBottom: 6 }}>
+                          {a}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div style={{ fontSize: 13, color: "#666" }}>No actions suggested.</div>
+                  )}
+                </div>
+
+                <div style={{ marginTop: 14 }}>
+                  <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 6 }}>
+                    Talking points
+                  </div>
+                  {result.talking_points?.length ? (
+                    <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+                      {result.talking_points.map((t, idx) => (
+                        <li key={idx} style={{ marginBottom: 6 }}>
+                          {t}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div style={{ fontSize: 13, color: "#666" }}>
+                      None generated by /assess.
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </SmallCard>
+
+          <SmallCard title="AI: Explain assessment">
+            <button
+              onClick={onAIExplain}
+              disabled={!result || aiExplainLoading}
+              style={{
+                padding: "10px 14px",
+                borderRadius: 8,
+                border: "1px solid #111",
+                background: !result || aiExplainLoading ? "#eee" : "#111",
+                color: !result || aiExplainLoading ? "#111" : "#fff",
+                cursor: !result || aiExplainLoading ? "not-allowed" : "pointer",
+                fontWeight: 800,
+              }}
+            >
+              {aiExplainLoading ? "Working..." : "Generate explanation"}
+            </button>
+
+            {aiExplainError && (
+              <div style={{ marginTop: 10, color: "#b3261e", fontSize: 13 }}>
+                {aiExplainError}
               </div>
+            )}
 
-              {aiError && (
-                <div style={{ marginTop: 12, color: "#b3261e", fontSize: 13 }}>{aiError}</div>
-              )}
+            {!aiExplain ? (
+              <div style={{ marginTop: 10, fontSize: 13, color: "#666" }}>
+                Uses <code>/ai/explain</code>. Requires an assessment result.
+              </div>
+            ) : (
+              <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+                <div style={{ fontSize: 13 }}>
+                  <div style={{ fontWeight: 800, marginBottom: 6 }}>
+                    Executive summary
+                  </div>
+                  <div style={{ color: "#333" }}>{aiExplain.executive_summary}</div>
+                </div>
 
-              {aiExplain && (
-                <div style={{ marginTop: 14, fontSize: 13 }}>
-                  <div style={{ fontWeight: 800, marginBottom: 6 }}>Executive summary</div>
-                  <div>{aiExplain.executive_summary}</div>
-
+                <div style={{ fontSize: 13 }}>
+                  <div style={{ fontWeight: 800, marginBottom: 6 }}>Key risks</div>
                   {aiExplain.key_risks_explained?.length ? (
-                    <>
-                      <div style={{ fontWeight: 800, margin: "10px 0 6px 0" }}>Key risks</div>
-                      <ul style={{ margin: 0, paddingLeft: 18 }}>
-                        {aiExplain.key_risks_explained.map((k, idx) => (
-                          <li key={idx} style={{ marginBottom: 6 }}>
-                            {k}
-                          </li>
-                        ))}
-                      </ul>
-                    </>
-                  ) : null}
+                    <ul style={{ margin: 0, paddingLeft: 18 }}>
+                      {aiExplain.key_risks_explained.map((r, idx) => (
+                        <li key={idx} style={{ marginBottom: 6 }}>
+                          {r}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div style={{ color: "#666" }}>None returned.</div>
+                  )}
+                </div>
 
-                  {aiExplain.rm_talking_points?.length ? (
-                    <>
-                      <div style={{ fontWeight: 800, margin: "10px 0 6px 0" }}>RM talking points</div>
-                      <ul style={{ margin: 0, paddingLeft: 18 }}>
-                        {aiExplain.rm_talking_points.map((t, idx) => (
-                          <li key={idx} style={{ marginBottom: 6 }}>
-                            {t}
-                          </li>
-                        ))}
-                      </ul>
-                    </>
-                  ) : null}
-
-                  <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>
-                    {aiExplain.disclaimer}
+                <div style={{ fontSize: 13 }}>
+                  <div style={{ fontWeight: 800, marginBottom: 6 }}>
+                    RM talking points
                   </div>
+                  {aiExplain.rm_talking_points?.length ? (
+                    <ul style={{ margin: 0, paddingLeft: 18 }}>
+                      {aiExplain.rm_talking_points.map((tp, idx) => (
+                        <li key={idx} style={{ marginBottom: 6 }}>
+                          {tp}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div style={{ color: "#666" }}>None returned.</div>
+                  )}
                 </div>
-              )}
 
-              {aiAnswer && (
-                <div style={{ marginTop: 14, fontSize: 13 }}>
-                  <div style={{ fontWeight: 800, marginBottom: 6 }}>Answer</div>
-                  <div>{aiAnswer.answer}</div>
-                  <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>{aiAnswer.disclaimer}</div>
+                <div style={{ fontSize: 12, color: "#666" }}>
+                  {aiExplain.disclaimer}
                 </div>
-              )}
-            </>
-          )}
+              </div>
+            )}
+          </SmallCard>
 
-          <div style={{ marginTop: 16, fontSize: 12, color: "#666" }}>
-            Backend endpoints: <code>{ASSESS_URL}</code> · <code>{AI_EXPLAIN_URL}</code> · <code>{AI_QA_URL}</code>
-          </div>
+          <SmallCard title="AI: Deal Q&A">
+            <FieldRow
+              label="Question"
+              input={
+                <input
+                  value={question}
+                  onChange={(e) => setQuestion(e.target.value)}
+                  style={{ width: "100%", padding: 8 }}
+                  placeholder="e.g., What are the top 3 approval risks?"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") onAIQA();
+                  }}
+                />
+              }
+            />
+
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button
+                onClick={onAIQA}
+                disabled={aiQaLoading || !question.trim()}
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: 8,
+                  border: "1px solid #111",
+                  background: aiQaLoading || !question.trim() ? "#eee" : "#111",
+                  color: aiQaLoading || !question.trim() ? "#111" : "#fff",
+                  cursor: aiQaLoading || !question.trim() ? "not-allowed" : "pointer",
+                  fontWeight: 800,
+                }}
+              >
+                {aiQaLoading ? "Working..." : "Ask"}
+              </button>
+
+              <button
+                onClick={() => {
+                  setAiAnswer(null);
+                  setAiQaError(null);
+                }}
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: 8,
+                  border: "1px solid #ccc",
+                  background: "#fff",
+                  cursor: "pointer",
+                }}
+              >
+                Clear AI output
+              </button>
+            </div>
+
+            {aiQaError && (
+              <div style={{ marginTop: 10, color: "#b3261e", fontSize: 13 }}>
+                {aiQaError}
+              </div>
+            )}
+
+            {!aiAnswer ? (
+              <div style={{ marginTop: 10, fontSize: 13, color: "#666" }}>
+                Uses <code>/ai/qa</code>. If you ran /assess, it will pass the deal summary to AI.
+              </div>
+            ) : (
+              <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                <div style={{ fontSize: 13, color: "#333" }}>{aiAnswer.answer}</div>
+                <div style={{ fontSize: 12, color: "#666" }}>
+                  {aiAnswer.disclaimer}
+                </div>
+              </div>
+            )}
+          </SmallCard>
         </div>
       </div>
     </div>
   );
 }
-
