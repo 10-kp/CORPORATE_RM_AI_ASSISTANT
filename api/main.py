@@ -5,6 +5,7 @@ import os
 import re
 from datetime import date
 from typing import Any, Dict, List, Optional
+from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -12,6 +13,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+# =========================
+# Load environment variables
+# =========================
+ROOT_DIR = Path(__file__).resolve().parents[1]
+load_dotenv(ROOT_DIR / ".env")
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
+
+# =========================
+# App & schemas
+# =========================
 from api.schemas import (
     AIExplainRequest,
     AIExplainResponse,
@@ -20,14 +33,6 @@ from api.schemas import (
     DealInputRequest,
     DealSummaryResponse,
 )
-
-# =========================
-# Env / OpenAI setup
-# =========================
-load_dotenv()  # loads .env (if present) into environment variables
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
-MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
 
 oa_client = None
 if OPENAI_API_KEY:
