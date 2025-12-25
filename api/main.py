@@ -21,9 +21,36 @@ load_dotenv(ROOT_DIR / ".env")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
+FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "").strip()
 
 # =========================
-# App & schemas
+# App creation (ONLY ONCE)
+# =========================
+app = FastAPI(
+    title="Corporate RM AI Assistant",
+    version="0.1.0"
+)
+
+# =========================
+# Health check
+# =========================
+@app.get("/health", include_in_schema=False)
+def health():
+    return {"status": "ok"}
+
+# =========================
+# CORS
+# =========================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[FRONTEND_ORIGIN] if FRONTEND_ORIGIN else ["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# =========================
+# Schemas
 # =========================
 from api.schemas import (
     AIExplainRequest,
@@ -34,28 +61,16 @@ from api.schemas import (
     DealSummaryResponse,
 )
 
+# =========================
+# OpenAI client
+# =========================
 oa_client = None
 if OPENAI_API_KEY:
     try:
         from openai import OpenAI
-
         oa_client = OpenAI(api_key=OPENAI_API_KEY)
     except Exception:
         oa_client = None
-
-
-# =========================
-# App
-# =========================
-app = FastAPI(title="Corporate RM AI Assistant", version="0.1.0")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # tighten later
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # =========================
 # Step 2 (Hardening): input guardrails
@@ -391,22 +406,39 @@ def ai_qa(payload: AIQARequest):
 # =========================
 # SPA (serve built frontend if present)
 # =========================
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-STATIC_DIR = os.path.join(BASE_DIR, "static")
-INDEX_HTML = os.path.join(STATIC_DIR, "index.html")
+from fastapi.responses import JSONResponse
 
-if os.path.exists(INDEX_HTML):
-    assets_dir = os.path.join(STATIC_DIR, "assets")
-    if os.path.isdir(assets_dir):
-        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+API_DIR = Path(__file__).resolve().parent          # .../api
+STATIC_DIR = API_DIR / "static"                    # .../api/static
+INDEX_HTML = STATIC_DIR / "index.html"
+
+# Paths that must NOT be hijacked by SPA fallback
+_API_PREFIXES = (
+    "assess",
+    "ai",
+    "api",
+    "docs",
+    "openapi.json",
+    "health",
+    "assets",
+)
+
+if INDEX_HTML.exists():
+    assets_dir = STATIC_DIR / "assets"
+    if assets_dir.is_dir():
+        # Vite usually references /assets/... in index.html
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
     @app.get("/", include_in_schema=False)
     def spa_root():
-        return FileResponse(INDEX_HTML)
+        return FileResponse(str(INDEX_HTML))
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def spa_fallback(full_path: str):
-        return FileResponse(INDEX_HTML)
+        # Let API routes behave normally (do NOT return index.html)
+        if full_path == "" or full_path.startswith(_API_PREFIXES):
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        return FileResponse(str(INDEX_HTML))
 else:
     @app.get("/", include_in_schema=False)
     def root():
