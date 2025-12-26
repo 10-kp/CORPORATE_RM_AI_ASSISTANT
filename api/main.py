@@ -10,7 +10,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 # =========================
@@ -406,11 +406,14 @@ def ai_qa(payload: AIQARequest):
 # =========================
 # SPA (serve built frontend if present)
 # =========================
-from fastapi.responses import JSONResponse
-
 API_DIR = Path(__file__).resolve().parent          # .../api
 STATIC_DIR = API_DIR / "static"                    # .../api/static
 INDEX_HTML = STATIC_DIR / "index.html"
+
+# Always mount assets (required for Vite builds)
+assets_dir = STATIC_DIR / "assets"
+if assets_dir.is_dir():
+    app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
 # Paths that must NOT be hijacked by SPA fallback
 _API_PREFIXES = (
@@ -424,19 +427,14 @@ _API_PREFIXES = (
 )
 
 if INDEX_HTML.exists():
-    assets_dir = STATIC_DIR / "assets"
-    if assets_dir.is_dir():
-        # Vite usually references /assets/... in index.html
-        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
-
     @app.get("/", include_in_schema=False)
     def spa_root():
         return FileResponse(str(INDEX_HTML))
 
-    @app.get("/{full_path:path}", include_in_schema=False)
-    def spa_fallback(full_path: str):
+    @app.get("/{path:path}", include_in_schema=False)
+    def spa_fallback(path: str):
         # Let API routes behave normally (do NOT return index.html)
-        if full_path == "" or full_path.startswith(_API_PREFIXES):
+        if path == "" or path.startswith(_API_PREFIXES):
             return JSONResponse({"detail": "Not Found"}, status_code=404)
         return FileResponse(str(INDEX_HTML))
 else:
