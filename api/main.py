@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 # =========================
-# Load environment variables
+# Load environment variablesw
 # =========================
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR / ".env")
@@ -404,18 +404,20 @@ def ai_qa(payload: AIQARequest):
 
 
 # =========================
-# SPA (serve built frontend if present)
+# SPA (serve built frontend)
 # =========================
-API_DIR = Path(__file__).resolve().parent          # .../api
-STATIC_DIR = API_DIR / "static"                    # .../api/static
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+API_DIR = Path(__file__).resolve().parent
+STATIC_DIR = API_DIR / "static"
 INDEX_HTML = STATIC_DIR / "index.html"
 
-# Always mount assets (required for Vite builds)
+# Always mount assets (required for Vite)
 assets_dir = STATIC_DIR / "assets"
 if assets_dir.is_dir():
     app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
-# Paths that must NOT be hijacked by SPA fallback
 _API_PREFIXES = (
     "assess",
     "ai",
@@ -433,17 +435,6 @@ if INDEX_HTML.exists():
 
     @app.get("/{path:path}", include_in_schema=False)
     def spa_fallback(path: str):
-        # Let API routes behave normally (do NOT return index.html)
         if path == "" or path.startswith(_API_PREFIXES):
             return JSONResponse({"detail": "Not Found"}, status_code=404)
         return FileResponse(str(INDEX_HTML))
-else:
-    @app.get("/", include_in_schema=False)
-    def root():
-        return {
-            "status": "ok",
-            "docs": "/docs",
-            "assess_endpoint": "POST /assess",
-            "ai_qa": "POST /ai/qa",
-            "ai_explain": "POST /ai/explain",
-        }
