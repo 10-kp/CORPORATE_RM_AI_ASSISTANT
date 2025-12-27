@@ -350,7 +350,9 @@ export default function App() {
 
       if (!resp.ok) {
         const txt = await resp.text().catch(() => "");
-        throw new Error(`AI explain error ${resp.status}${txt ? `: ${txt}` : ""}`);
+        throw new Error(
+          `AI explain error ${resp.status}${txt ? `: ${txt}` : ""}`
+        );
       }
 
       const out: AIExplainOut = await resp.json();
@@ -424,7 +426,9 @@ export default function App() {
             input={
               <input
                 value={form.client_name}
-                onChange={(e) => setForm({ ...form, client_name: e.target.value })}
+                onChange={(e) =>
+                  setForm({ ...form, client_name: e.target.value })
+                }
                 style={controlStyle}
                 placeholder="e.g., ABC Manufacturing LLC"
               />
@@ -448,7 +452,9 @@ export default function App() {
             input={
               <select
                 value={form.sector}
-                onChange={(e) => setForm({ ...form, sector: e.target.value as Sector })}
+                onChange={(e) =>
+                  setForm({ ...form, sector: e.target.value as Sector })
+                }
                 style={controlStyle}
               >
                 <option>Manufacturing</option>
@@ -468,7 +474,9 @@ export default function App() {
             input={
               <select
                 value={form.rating_system}
-                onChange={(e) => setForm({ ...form, rating_system: e.target.value })}
+                onChange={(e) =>
+                  setForm({ ...form, rating_system: e.target.value })
+                }
                 style={controlStyle}
               >
                 <option>Credit Lens</option>
@@ -482,7 +490,9 @@ export default function App() {
             input={
               <input
                 value={form.rating_grade}
-                onChange={(e) => setForm({ ...form, rating_grade: e.target.value })}
+                onChange={(e) =>
+                  setForm({ ...form, rating_grade: e.target.value })
+                }
                 style={controlStyle}
                 placeholder="e.g., Baa3 / 6 / BB- (as per system)"
               />
@@ -494,7 +504,9 @@ export default function App() {
             input={
               <input
                 value={form.rating_outlook}
-                onChange={(e) => setForm({ ...form, rating_outlook: e.target.value })}
+                onChange={(e) =>
+                  setForm({ ...form, rating_outlook: e.target.value })
+                }
                 style={controlStyle}
                 placeholder="Stable / Negative / Positive"
               />
@@ -506,7 +518,9 @@ export default function App() {
             input={
               <input
                 value={form.rating_as_of}
-                onChange={(e) => setForm({ ...form, rating_as_of: e.target.value })}
+                onChange={(e) =>
+                  setForm({ ...form, rating_as_of: e.target.value })
+                }
                 style={controlStyle}
                 placeholder="Optional"
               />
@@ -524,7 +538,12 @@ export default function App() {
                 max={6}
                 step={0.1}
                 value={form.eligibility_score}
-                onChange={(e) => setForm({ ...form, eligibility_score: Number(e.target.value) })}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    eligibility_score: Number(e.target.value),
+                  })
+                }
                 style={controlStyle}
               />
             }
@@ -535,7 +554,9 @@ export default function App() {
             input={
               <input
                 value={form.eligibility_drivers}
-                onChange={(e) => setForm({ ...form, eligibility_drivers: e.target.value })}
+                onChange={(e) =>
+                  setForm({ ...form, eligibility_drivers: e.target.value })
+                }
                 style={controlStyle}
                 placeholder="e.g., Job creation, Exports, ICV"
               />
@@ -549,7 +570,12 @@ export default function App() {
             input={
               <select
                 value={form.revenue_trend_3y}
-                onChange={(e) => setForm({ ...form, revenue_trend_3y: e.target.value as Trend3Y })}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    revenue_trend_3y: e.target.value as Trend3Y,
+                  })
+                }
                 style={controlStyle}
               >
                 <option>Improving</option>
@@ -565,7 +591,10 @@ export default function App() {
               <select
                 value={form.margin_trend_3y}
                 onChange={(e) =>
-                  setForm({ ...form, margin_trend_3y: e.target.value as MarginTrend })
+                  setForm({
+                    ...form,
+                    margin_trend_3y: e.target.value as MarginTrend,
+                  })
                 }
                 style={controlStyle}
               >
@@ -581,7 +610,12 @@ export default function App() {
             input={
               <select
                 value={form.leverage_position}
-                onChange={(e) => setForm({ ...form, leverage_position: e.target.value as Leverage })}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    leverage_position: e.target.value as Leverage,
+                  })
+                }
                 style={controlStyle}
               >
                 <option>Low</option>
@@ -596,7 +630,12 @@ export default function App() {
             input={
               <select
                 value={form.cashflow_quality}
-                onChange={(e) => setForm({ ...form, cashflow_quality: e.target.value as Signal3 })}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    cashflow_quality: e.target.value as Signal3,
+                  })
+                }
                 style={controlStyle}
               >
                 <option>Strong</option>
@@ -612,7 +651,10 @@ export default function App() {
               <select
                 value={form.earnings_volatility}
                 onChange={(e) =>
-                  setForm({ ...form, earnings_volatility: e.target.value as Volatility })
+                  setForm({
+                    ...form,
+                    earnings_volatility: e.target.value as Volatility,
+                  })
                 }
                 style={controlStyle}
               >
@@ -671,7 +713,9 @@ export default function App() {
             placeholder="Optional RM notes"
           />
 
-          <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <div
+            style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}
+          >
             <button
               onClick={onAssess}
               disabled={!canSubmit || loading}
@@ -689,12 +733,16 @@ export default function App() {
             </button>
           </div>
 
-          {error && <div style={{ marginTop: 12, color: "#FF9C9C", fontSize: 12 }}>{error}</div>}
+          {error && (
+            <div style={{ marginTop: 12, color: "#FF9C9C", fontSize: 12 }}>
+              {error}
+            </div>
+          )}
 
           <div style={{ marginTop: 14 }}>
             <SmallMuted>
-              Backend endpoints (frontend calls): <code>/assess</code>, <code>/ai/explain</code>,{" "}
-              <code>/ai/qa</code>
+              Backend endpoints (frontend calls): <code>/assess</code>,{" "}
+              <code>/ai/explain</code>, <code>/ai/qa</code>
             </SmallMuted>
           </div>
         </div>
@@ -705,10 +753,19 @@ export default function App() {
             <SectionTitle>Assessment output</SectionTitle>
 
             {!result ? (
-              <SmallMuted>Run an assessment to see deal readiness, constraints, and RM actions.</SmallMuted>
+              <SmallMuted>
+                Run an assessment to see deal readiness, constraints, and RM
+                actions.
+              </SmallMuted>
             ) : (
               <>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 12,
+                  }}
+                >
                   <div>
                     <SmallMuted>Deal readiness</SmallMuted>
                     <div style={{ marginTop: 6 }}>
@@ -717,22 +774,41 @@ export default function App() {
                   </div>
                   <div style={{ textAlign: "right" }}>
                     <SmallMuted>Client</SmallMuted>
-                    <div style={{ fontSize: 13, fontWeight: 900 }}>{result.client_name}</div>
+                    <div style={{ fontSize: 13, fontWeight: 900 }}>
+                      {result.client_name}
+                    </div>
                     {result.group_name ? (
-                      <div style={{ fontSize: 12, color: "#9a9a9a" }}>{result.group_name}</div>
+                      <div style={{ fontSize: 12, color: "#9a9a9a" }}>
+                        {result.group_name}
+                      </div>
                     ) : null}
                   </div>
                 </div>
 
                 <div style={{ marginTop: 12, fontSize: 13 }}>
-                  <div style={{ fontWeight: 900, marginBottom: 6 }}>Mandate fit summary</div>
-                  <div style={{ color: "#d7d7d7" }}>{result.mandate_fit_summary}</div>
+                  <div style={{ fontWeight: 900, marginBottom: 6 }}>
+                    Mandate fit summary
+                  </div>
+                  <div style={{ color: "#d7d7d7" }}>
+                    {result.mandate_fit_summary}
+                  </div>
                 </div>
 
                 <div style={{ marginTop: 14 }}>
-                  <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 6 }}>Constraints</div>
+                  <div
+                    style={{ fontWeight: 900, fontSize: 13, marginBottom: 6 }}
+                  >
+                    Constraints
+                  </div>
                   {result.deal_readiness.constraints?.length ? (
-                    <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: "#d7d7d7" }}>
+                    <ul
+                      style={{
+                        margin: 0,
+                        paddingLeft: 18,
+                        fontSize: 13,
+                        color: "#d7d7d7",
+                      }}
+                    >
                       {result.deal_readiness.constraints.map((c, idx) => (
                         <li key={idx} style={{ marginBottom: 6 }}>
                           {c}
@@ -745,9 +821,20 @@ export default function App() {
                 </div>
 
                 <div style={{ marginTop: 14 }}>
-                  <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 6 }}>RM actions</div>
+                  <div
+                    style={{ fontWeight: 900, fontSize: 13, marginBottom: 6 }}
+                  >
+                    RM actions
+                  </div>
                   {result.rm_actions?.length ? (
-                    <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: "#d7d7d7" }}>
+                    <ul
+                      style={{
+                        margin: 0,
+                        paddingLeft: 18,
+                        fontSize: 13,
+                        color: "#d7d7d7",
+                      }}
+                    >
                       {result.rm_actions.map((a, idx) => (
                         <li key={idx} style={{ marginBottom: 6 }}>
                           {a}
@@ -760,11 +847,20 @@ export default function App() {
                 </div>
 
                 <div style={{ marginTop: 14 }}>
-                  <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 6 }}>
+                  <div
+                    style={{ fontWeight: 900, fontSize: 13, marginBottom: 6 }}
+                  >
                     Talking points
                   </div>
                   {result.talking_points?.length ? (
-                    <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: "#d7d7d7" }}>
+                    <ul
+                      style={{
+                        margin: 0,
+                        paddingLeft: 18,
+                        fontSize: 13,
+                        color: "#d7d7d7",
+                      }}
+                    >
                       {result.talking_points.map((t, idx) => (
                         <li key={idx} style={{ marginBottom: 6 }}>
                           {t}
@@ -785,7 +881,9 @@ export default function App() {
               Uses <code>/ai/explain</code>. Requires an assessment result.
             </SmallMuted>
 
-            <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <div
+              style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}
+            >
               <button
                 onClick={onAiExplain}
                 disabled={!result || aiExplainLoading}
@@ -810,7 +908,9 @@ export default function App() {
             </div>
 
             {aiExplainError && (
-              <div style={{ marginTop: 10, color: "#FF9C9C", fontSize: 12 }}>{aiExplainError}</div>
+              <div style={{ marginTop: 10, color: "#FF9C9C", fontSize: 12 }}>
+                {aiExplainError}
+              </div>
             )}
 
             {aiExplain && (
@@ -818,7 +918,9 @@ export default function App() {
                 <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 6 }}>
                   Executive summary
                 </div>
-                <div style={{ fontSize: 13, color: "#d7d7d7" }}>{aiExplain.executive_summary}</div>
+                <div style={{ fontSize: 13, color: "#d7d7d7" }}>
+                  {aiExplain.executive_summary}
+                </div>
 
                 <div style={{ marginTop: 12, fontWeight: 900, fontSize: 13, marginBottom: 6 }}>
                   Key risks
@@ -863,7 +965,14 @@ export default function App() {
               Uses <code>/ai/qa</code>. If you ran /assess, it will pass the deal summary to AI.
             </SmallMuted>
 
-            <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr auto", gap: 10 }}>
+            <div
+              style={{
+                marginTop: 10,
+                display: "grid",
+                gridTemplateColumns: "1fr auto",
+                gap: 10,
+              }}
+            >
               <input
                 value={question}
                 onChange={(e) => setQuestion(e.target.value)}
@@ -884,11 +993,17 @@ export default function App() {
               </button>
             </div>
 
-            {aiQaError && <div style={{ marginTop: 10, color: "#FF9C9C", fontSize: 12 }}>{aiQaError}</div>}
+            {aiQaError && (
+              <div style={{ marginTop: 10, color: "#FF9C9C", fontSize: 12 }}>
+                {aiQaError}
+              </div>
+            )}
 
             {aiAnswer && (
               <div style={{ marginTop: 12 }}>
-                <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 6 }}>Answer</div>
+                <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 6 }}>
+                  Answer
+                </div>
                 <div style={{ fontSize: 13, color: "#d7d7d7", whiteSpace: "pre-wrap" }}>
                   {aiAnswer.answer}
                 </div>
@@ -900,11 +1015,46 @@ export default function App() {
           </div>
 
           <div style={{ fontSize: 11, color: "#7e7e7e" }}>
-            Backend endpoints: <code>{ASSESS_URL}</code> • <code>{AI_EXPLAIN_URL}</code> •{" "}
-            <code>{AI_QA_URL}</code>
+            Backend endpoints: <code>{ASSESS_URL}</code> •{" "}
+            <code>{AI_EXPLAIN_URL}</code> • <code>{AI_QA_URL}</code>
           </div>
         </div>
       </div>
+
+      {/* About section (INSIDE return) */}
+      <hr style={{ margin: "2rem 0", opacity: 0.2 }} />
+
+      <section
+        style={{
+          maxWidth: 900,
+          margin: "0 auto",
+          lineHeight: 1.6,
+          fontSize: "0.95rem",
+        }}
+      >
+        <h3>About this prototype</h3>
+        <p>
+          This is a prototype Corporate RM Deal Readiness &amp; Mandate Fit Assistant designed to
+          support Relationship Managers during early-stage screening.
+        </p>
+        <p>
+          It structures eligibility signals, financial signals, constraints, and RM actions into
+          consistent and explainable outputs.
+        </p>
+      </section>
+
+      {/* Footer disclaimer (INSIDE return) */}
+      <footer
+        style={{
+          marginTop: "2rem",
+          padding: "1rem",
+          fontSize: "0.75rem",
+          color: "#999",
+          textAlign: "center",
+        }}
+      >
+        Prototype – RM decision support only. Not a credit decision engine.
+      </footer>
     </div>
   );
 }
