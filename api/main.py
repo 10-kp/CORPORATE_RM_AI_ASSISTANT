@@ -434,8 +434,6 @@ API_DIR = Path(__file__).resolve().parent
 STATIC_DIR = API_DIR / "static"
 INDEX_HTML = STATIC_DIR / "index.html"
 
-////////
-
 
 _API_PREFIXES = (
     "assess",
