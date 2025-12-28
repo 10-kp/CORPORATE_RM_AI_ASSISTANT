@@ -5,13 +5,20 @@ import os
 import re
 from datetime import date
 from typing import Any, Dict, List, Optional
-from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
+
+from pathlib import Path
 from fastapi.staticfiles import StaticFiles
+
+ROOT = Path(__file__).resolve().parents[1]
+FRONTEND_DIST = ROOT / "frontend" / "dist"
+
+app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="spa")
+
 
 # =========================
 # Load environment variablesw
@@ -135,6 +142,18 @@ def _assess_deal(payload: DealInputRequest) -> DealSummaryResponse:
     if payload.eligibility.drivers:
         strengths.append("Eligibility drivers provided.")
 
+    # Risk–Return (RM-entered indicative RAROC)
+    if payload.indicative_raroc_pct is not None:
+        r = float(payload.indicative_raroc_pct)
+        if r >= 5.0:
+            strengths.append(f"Indicative RAROC meets hurdle ({r:.1f}%).")
+        else:
+            constraints.append(f"Indicative RAROC below hurdle ({r:.1f}% vs 5.0%).")
+            rm_actions.append("Improve risk–return: increase pricing margin (spread) where feasible.")
+            rm_actions.append("Improve risk–return: add upfront/arrangement fees or commitment fees.")
+            rm_actions.append("Improve risk–return: consider shorter tenor or amortisation to reduce risk.")
+            rm_actions.append("Improve risk–return: strengthen security package/guarantees or reduce facility size.")
+
     # Financial signals
     fs = payload.financial_signals
 
@@ -218,6 +237,7 @@ def _assess_deal(payload: DealInputRequest) -> DealSummaryResponse:
         rating_anchor=payload.rating_anchor,
         eligibility=payload.eligibility,
         financial_signals=payload.financial_signals,
+    indicative_raroc_pct=payload.indicative_raroc_pct,
         deal_readiness={"status": status, "strengths": strengths, "constraints": constraints},
         mandate_fit_summary=mandate_fit_summary,
         rm_actions=rm_actions,
@@ -256,6 +276,7 @@ def _deal_to_brief(deal: DealSummaryResponse) -> str:
         f"Sector: {d.get('sector')}\n"
         f"Rating: {d.get('rating_anchor', {}).get('system')} / {d.get('rating_anchor', {}).get('grade')}\n"
         f"Eligibility: {d.get('eligibility', {}).get('score')} / 6\n"
+        f"Indicative RAROC: {d.get('indicative_raroc_pct') if d.get('indicative_raroc_pct') is not None else 'N/A'}%\n"
         f"Readiness: {dr.get('status')}\n"
         f"Strengths: {', '.join(dr.get('strengths', [])[:6])}\n"
         f"Constraints: {', '.join(dr.get('constraints', [])[:6])}\n"
@@ -413,10 +434,8 @@ API_DIR = Path(__file__).resolve().parent
 STATIC_DIR = API_DIR / "static"
 INDEX_HTML = STATIC_DIR / "index.html"
 
-# Always mount assets (required for Vite)
-assets_dir = STATIC_DIR / "assets"
-if assets_dir.is_dir():
-    app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+////////
+
 
 _API_PREFIXES = (
     "assess",
