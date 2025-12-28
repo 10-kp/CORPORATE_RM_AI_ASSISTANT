@@ -12,13 +12,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 
 from pathlib import Path
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+
+app = FastAPI()
 
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_DIST = ROOT / "frontend" / "dist"
 
-app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="spa")
-
+if FRONTEND_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="spa")
 
 # =========================
 # Load environment variablesw
