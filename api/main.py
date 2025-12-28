@@ -4,27 +4,17 @@ from __future__ import annotations
 import os
 import re
 from datetime import date
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
-
-from pathlib import Path
-from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-app = FastAPI()
-
-ROOT = Path(__file__).resolve().parents[1]
-FRONTEND_DIST = ROOT / "frontend" / "dist"
-
-if FRONTEND_DIST.is_dir():
-    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="spa")
-
 # =========================
-# Load environment variablesw
+# Load environment variables
 # =========================
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR / ".env")
@@ -36,10 +26,7 @@ FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "").strip()
 # =========================
 # App creation (ONLY ONCE)
 # =========================
-app = FastAPI(
-    title="Corporate RM AI Assistant",
-    version="0.1.0"
-)
+app = FastAPI(title="Corporate RM AI Assistant", version="0.1.0")
 
 # =========================
 # Health check
@@ -62,7 +49,7 @@ app.add_middleware(
 # =========================
 # Schemas
 # =========================
-from api.schemas import (
+from api.schemas import (  # noqa: E402
     AIExplainRequest,
     AIExplainResponse,
     AIQARequest,
@@ -77,7 +64,8 @@ from api.schemas import (
 oa_client = None
 if OPENAI_API_KEY:
     try:
-        from openai import OpenAI
+        from openai import OpenAI  # type: ignore
+
         oa_client = OpenAI(api_key=OPENAI_API_KEY)
     except Exception:
         oa_client = None
@@ -91,6 +79,7 @@ _SENSITIVE_PATTERNS = [
     re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),  # email
 ]
 
+
 def _contains_sensitive(text: str) -> bool:
     if not text:
         return False
@@ -98,6 +87,7 @@ def _contains_sensitive(text: str) -> bool:
     if not t:
         return False
     return any(p.search(t) for p in _SENSITIVE_PATTERNS)
+
 
 def _guard_no_sensitive(*texts: str):
     for t in texts:
@@ -115,7 +105,6 @@ def _guard_no_sensitive(*texts: str):
 # Step 3 (Credit logic tightening): deterministic assessment
 # =========================
 def _assess_deal(payload: DealInputRequest) -> DealSummaryResponse:
-    # --- Guardrails (apply to any free-text fields)
     _guard_no_sensitive(payload.client_name, payload.group_name or "", payload.notes or "")
 
     strengths: List[str] = []
@@ -155,56 +144,50 @@ def _assess_deal(payload: DealInputRequest) -> DealSummaryResponse:
             rm_actions.append("Improve risk–return: increase pricing margin (spread) where feasible.")
             rm_actions.append("Improve risk–return: add upfront/arrangement fees or commitment fees.")
             rm_actions.append("Improve risk–return: consider shorter tenor or amortisation to reduce risk.")
-            rm_actions.append("Improve risk–return: strengthen security package/guarantees or reduce facility size.")
+            rm_actions.append(
+                "Improve risk–return: strengthen security package/guarantees or reduce facility size."
+            )
 
     # Financial signals
     fs = payload.financial_signals
 
-    # Revenue
     if fs.revenue_trend_3y == "Improving":
         strengths.append("Revenue trend improving over 3 years.")
     elif fs.revenue_trend_3y == "Declining":
         constraints.append("Revenue trend declining over 3 years.")
         rm_actions.append("Validate orderbook, customer concentration, and recovery plan.")
 
-    # Margin
     if fs.margin_trend_3y == "Improving":
         strengths.append("Margins improving over 3 years.")
     elif fs.margin_trend_3y == "Under Pressure":
         constraints.append("Margins under pressure; risk to debt service capacity.")
         rm_actions.append("Assess pricing power, input cost pass-through, and covenant buffers.")
 
-    # Leverage
     if fs.leverage_position == "Low":
         strengths.append("Low leverage position.")
     elif fs.leverage_position == "Elevated":
         constraints.append("Elevated leverage position; reduced headroom.")
         rm_actions.append("Consider structure support: amortisation, covenants, collateral, DSRA/DSCR.")
 
-    # Cash flow quality
     if fs.cashflow_quality == "Strong":
         strengths.append("Strong cash flow quality.")
     elif fs.cashflow_quality == "Weak":
         constraints.append("Weak cash flow quality; potential working-capital stress.")
         rm_actions.append("Request WC cycle analysis, ageing, and evidence of collections discipline.")
 
-    # Earnings volatility
     if fs.earnings_volatility == "High":
         constraints.append("High earnings volatility; needs stronger controls/monitoring.")
         rm_actions.append("Add monitoring triggers and tighten covenants; test downside scenarios.")
 
-    # Capex/investment
     if fs.capex_growth_investment == "High":
         constraints.append("High capex/growth investment increases execution risk.")
         rm_actions.append("Validate capex plan, milestones, contingencies, and sponsor support.")
 
-    # Transparency
     if fs.financial_transparency == "Weak":
         constraints.append("Weak financial transparency limits credit comfort.")
         rm_actions.append("Obtain audited financials, detailed management accounts, and bank statements.")
 
     # Determine readiness
-    # Simple rule: any "major" constraints -> Conditional, multiple -> Weak
     major_count = 0
     for c in constraints:
         if any(k in c.lower() for k in ["declining", "under pressure", "elevated", "weak", "high"]):
@@ -217,7 +200,6 @@ def _assess_deal(payload: DealInputRequest) -> DealSummaryResponse:
     else:
         status = "Strong"
 
-    # Talking points (RM-friendly)
     if status == "Strong":
         talking_points.append("Mandate fit is clear; focus discussion on facility sizing and structure.")
     elif status == "Conditional":
@@ -225,7 +207,6 @@ def _assess_deal(payload: DealInputRequest) -> DealSummaryResponse:
     else:
         talking_points.append("Defer credit appetite until constraints are addressed and visibility improves.")
 
-    # Mandate fit summary (1 paragraph)
     mandate_fit_summary = (
         f"{payload.client_name} sits in the '{payload.sector}' sector with eligibility score "
         f"{payload.eligibility.score:.1f}/6. Deal readiness is assessed as {status} based on "
@@ -240,7 +221,7 @@ def _assess_deal(payload: DealInputRequest) -> DealSummaryResponse:
         rating_anchor=payload.rating_anchor,
         eligibility=payload.eligibility,
         financial_signals=payload.financial_signals,
-    indicative_raroc_pct=payload.indicative_raroc_pct,
+        indicative_raroc_pct=payload.indicative_raroc_pct,
         deal_readiness={"status": status, "strengths": strengths, "constraints": constraints},
         mandate_fit_summary=mandate_fit_summary,
         rm_actions=rm_actions,
@@ -258,12 +239,8 @@ def assess_deal(payload: DealInputRequest):
     return _assess_deal(payload)
 
 
-# Keep your old scoring endpoint if you still use it elsewhere
-# (Safe stub: you can remove if not needed)
 @app.post("/api/score")
 def api_score(payload: Dict[str, Any]):
-    # This is intentionally a placeholder.
-    # If you still have the LightGBM PD model path, keep your original /api/score code.
     return {"ok": True, "message": "Use POST /assess for deal readiness MVP."}
 
 
@@ -271,7 +248,6 @@ def api_score(payload: Dict[str, Any]):
 # AI helpers
 # =========================
 def _deal_to_brief(deal: DealSummaryResponse) -> str:
-    # deal is a Pydantic object, so use model_dump()
     d = deal.model_dump()
     dr = d.get("deal_readiness", {}) or {}
     return (
@@ -286,6 +262,7 @@ def _deal_to_brief(deal: DealSummaryResponse) -> str:
         f"RM actions: {', '.join(d.get('rm_actions', [])[:8])}\n"
         f"Notes: {d.get('notes') or ''}\n"
     )
+
 
 def _fallback_ai_qa(question: str, deal: Optional[DealSummaryResponse]) -> str:
     if not deal:
@@ -306,6 +283,7 @@ def _fallback_ai_qa(question: str, deal: Optional[DealSummaryResponse]) -> str:
         )
     return "Focus on clarifying rating anchor, eligibility drivers, and the weakest financial signals."
 
+
 def _ai_disclaimer() -> str:
     return (
         "Do not enter confidential/internal customer data into external AI. "
@@ -318,11 +296,9 @@ def _ai_disclaimer() -> str:
 # =========================
 @app.post("/ai/explain", response_model=AIExplainResponse)
 def ai_explain(payload: AIExplainRequest):
-    # Guard notes
     if payload.deal_summary.notes:
         _guard_no_sensitive(payload.deal_summary.notes)
 
-    # If no OpenAI, return deterministic explain
     if not oa_client:
         d = payload.deal_summary.model_dump()
         dr = d.get("deal_readiness", {}) or {}
@@ -361,7 +337,6 @@ def ai_explain(payload: AIExplainRequest):
             disclaimer=_ai_disclaimer(),
         )
 
-    # Minimal robust JSON parsing without extra deps
     import json
 
     try:
@@ -373,7 +348,6 @@ def ai_explain(payload: AIExplainRequest):
             disclaimer=_ai_disclaimer(),
         )
     except Exception:
-        # If model returned non-JSON, fallback
         d = payload.deal_summary.model_dump()
         dr = d.get("deal_readiness", {}) or {}
         return AIExplainResponse(
@@ -388,7 +362,6 @@ def ai_explain(payload: AIExplainRequest):
 def ai_qa(payload: AIQARequest):
     _guard_no_sensitive(payload.question)
 
-    # Deterministic if no AI
     if not oa_client:
         return AIQAResponse(
             answer=_fallback_ai_qa(payload.question, payload.deal_summary),
@@ -428,33 +401,9 @@ def ai_qa(payload: AIQARequest):
 
 
 # =========================
-# SPA (serve built frontend)
+# SPA (serve built frontend from Vite dist)
+# IMPORTANT: keep this at the END so API routes above take precedence.
 # =========================
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
-
-API_DIR = Path(__file__).resolve().parent
-STATIC_DIR = API_DIR / "static"
-INDEX_HTML = STATIC_DIR / "index.html"
-
-
-_API_PREFIXES = (
-    "assess",
-    "ai",
-    "api",
-    "docs",
-    "openapi.json",
-    "health",
-    "assets",
-)
-
-if INDEX_HTML.exists():
-    @app.get("/", include_in_schema=False)
-    def spa_root():
-        return FileResponse(str(INDEX_HTML))
-
-    @app.get("/{path:path}", include_in_schema=False)
-    def spa_fallback(path: str):
-        if path == "" or path.startswith(_API_PREFIXES):
-            return JSONResponse({"detail": "Not Found"}, status_code=404)
-        return FileResponse(str(INDEX_HTML))
+FRONTEND_DIST = ROOT_DIR / "frontend" / "dist"
+if FRONTEND_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="spa")
