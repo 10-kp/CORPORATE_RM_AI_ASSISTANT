@@ -56,6 +56,13 @@ class DealInputRequest(BaseModel):
     eligibility: EligibilityIn
     financial_signals: FinancialSignalsIn
 
+    indicative_raroc_pct: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=100.0,
+        description="Indicative RM-entered RAROC (%) for early screening (non-binding).",
+    )
+
     notes: Optional[str] = Field(None, description="Optional RM notes.")
 
     @field_validator("client_name")
@@ -80,6 +87,13 @@ class DealSummaryResponse(BaseModel):
     rating_anchor: RatingAnchorIn
     eligibility: EligibilityIn
     financial_signals: FinancialSignalsIn
+
+    indicative_raroc_pct: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=100.0,
+        description="Indicative RM-entered RAROC (%) for early screening (non-binding).",
+    )
 
     deal_readiness: DealReadinessOut
     mandate_fit_summary: str
@@ -111,4 +125,3 @@ class AIExplainResponse(BaseModel):
     key_risks_explained: List[str] = Field(default_factory=list)
     rm_talking_points: List[str] = Field(default_factory=list)
     disclaimer: str
-

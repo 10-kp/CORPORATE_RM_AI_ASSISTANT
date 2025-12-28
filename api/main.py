@@ -10,30 +10,26 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+
 # =========================
-# Load environment variables
+# Env
 # =========================
-ROOT_DIR = Path(__file__).resolve().parents[1]
-load_dotenv(ROOT_DIR / ".env")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(REPO_ROOT / ".env")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "").strip()
 
+
 # =========================
-# App creation (ONLY ONCE)
+# App (create ONCE)
 # =========================
 app = FastAPI(title="Corporate RM AI Assistant", version="0.1.0")
 
-# =========================
-# Health check
-# =========================
-@app.get("/health", include_in_schema=False)
-def health():
-    return {"status": "ok"}
 
 # =========================
 # CORS
@@ -45,6 +41,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# =========================
+# Health
+# =========================
+@app.get("/health", include_in_schema=False)
+def health():
+    return {"status": "ok"}
+
 
 # =========================
 # Schemas
@@ -58,8 +63,9 @@ from api.schemas import (  # noqa: E402
     DealSummaryResponse,
 )
 
+
 # =========================
-# OpenAI client
+# OpenAI client (optional)
 # =========================
 oa_client = None
 if OPENAI_API_KEY:
@@ -70,8 +76,9 @@ if OPENAI_API_KEY:
     except Exception:
         oa_client = None
 
+
 # =========================
-# Step 2 (Hardening): input guardrails
+# Input guardrails
 # =========================
 _SENSITIVE_PATTERNS = [
     re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b"),  # IBAN-ish
@@ -102,7 +109,7 @@ def _guard_no_sensitive(*texts: str):
 
 
 # =========================
-# Step 3 (Credit logic tightening): deterministic assessment
+# Deterministic assessment
 # =========================
 def _assess_deal(payload: DealInputRequest) -> DealSummaryResponse:
     _guard_no_sensitive(payload.client_name, payload.group_name or "", payload.notes or "")
@@ -112,7 +119,7 @@ def _assess_deal(payload: DealInputRequest) -> DealSummaryResponse:
     rm_actions: List[str] = []
     talking_points: List[str] = []
 
-    # Rating anchor signals (simple)
+    # Rating anchor
     if payload.rating_anchor.grade.strip():
         strengths.append(f"Rating anchor available from {payload.rating_anchor.system}.")
     else:
@@ -134,7 +141,7 @@ def _assess_deal(payload: DealInputRequest) -> DealSummaryResponse:
     if payload.eligibility.drivers:
         strengths.append("Eligibility drivers provided.")
 
-    # Risk–Return (RM-entered indicative RAROC)
+    # RAROC (NEW)
     if payload.indicative_raroc_pct is not None:
         r = float(payload.indicative_raroc_pct)
         if r >= 5.0:
@@ -144,9 +151,7 @@ def _assess_deal(payload: DealInputRequest) -> DealSummaryResponse:
             rm_actions.append("Improve risk–return: increase pricing margin (spread) where feasible.")
             rm_actions.append("Improve risk–return: add upfront/arrangement fees or commitment fees.")
             rm_actions.append("Improve risk–return: consider shorter tenor or amortisation to reduce risk.")
-            rm_actions.append(
-                "Improve risk–return: strengthen security package/guarantees or reduce facility size."
-            )
+            rm_actions.append("Improve risk–return: strengthen security/guarantees or reduce facility size.")
 
     # Financial signals
     fs = payload.financial_signals
@@ -187,10 +192,10 @@ def _assess_deal(payload: DealInputRequest) -> DealSummaryResponse:
         constraints.append("Weak financial transparency limits credit comfort.")
         rm_actions.append("Obtain audited financials, detailed management accounts, and bank statements.")
 
-    # Determine readiness
+    # Readiness label
     major_count = 0
     for c in constraints:
-        if any(k in c.lower() for k in ["declining", "under pressure", "elevated", "weak", "high"]):
+        if any(k in c.lower() for k in ["declining", "under pressure", "elevated", "weak", "high", "below hurdle"]):
             major_count += 1
 
     if major_count >= 3:
@@ -210,8 +215,7 @@ def _assess_deal(payload: DealInputRequest) -> DealSummaryResponse:
     mandate_fit_summary = (
         f"{payload.client_name} sits in the '{payload.sector}' sector with eligibility score "
         f"{payload.eligibility.score:.1f}/6. Deal readiness is assessed as {status} based on "
-        f"rating anchor, eligibility strength, and RM-level financial signals (revenue/margin/leverage/"
-        f"cash flow/volatility/transparency)."
+        f"rating anchor, eligibility strength, RM-level financial signals, and indicative risk–return."
     )
 
     return DealSummaryResponse(
@@ -245,7 +249,7 @@ def api_score(payload: Dict[str, Any]):
 
 
 # =========================
-# AI helpers
+# AI helpers/endpoints
 # =========================
 def _deal_to_brief(deal: DealSummaryResponse) -> str:
     d = deal.model_dump()
@@ -264,9 +268,16 @@ def _deal_to_brief(deal: DealSummaryResponse) -> str:
     )
 
 
+def _ai_disclaimer() -> str:
+    return (
+        "Do not enter confidential/internal customer data into external AI. "
+        "Use anonymised inputs only. Outputs are decision-support and must be reviewed by a qualified banker."
+    )
+
+
 def _fallback_ai_qa(question: str, deal: Optional[DealSummaryResponse]) -> str:
     if not deal:
-        return "Provide a deal assessment first (POST /assess), then ask a question grounded in the summary."
+        return "Run an assessment first (POST /assess), then ask a question grounded in the summary."
     d = deal.model_dump()
     dr = d.get("deal_readiness", {}) or {}
     status = dr.get("status", "Conditional")
@@ -281,19 +292,9 @@ def _fallback_ai_qa(question: str, deal: Optional[DealSummaryResponse]) -> str:
             + "\n\nNext RM actions:\n- "
             + "\n- ".join(actions[:6] or ["Request missing information and tighten structure accordingly."])
         )
-    return "Focus on clarifying rating anchor, eligibility drivers, and the weakest financial signals."
+    return "Clarify rating anchor, eligibility drivers, and the weakest financial signals."
 
 
-def _ai_disclaimer() -> str:
-    return (
-        "Do not enter confidential/internal customer data into external AI. "
-        "Use anonymised inputs only. Outputs are decision-support and must be reviewed by a qualified banker."
-    )
-
-
-# =========================
-# AI endpoints
-# =========================
 @app.post("/ai/explain", response_model=AIExplainResponse)
 def ai_explain(payload: AIExplainRequest):
     if payload.deal_summary.notes:
@@ -310,36 +311,23 @@ def ai_explain(payload: AIExplainRequest):
         )
 
     prompt = (
-        "You are a corporate banking RM copilot. You must be concise, practical, and risk-aware.\n"
-        "You must NOT invent data. Use only the deal summary.\n\n"
+        "You are a corporate banking RM copilot. Be concise, practical, risk-aware. Do NOT invent data.\n\n"
         f"DEAL SUMMARY:\n{_deal_to_brief(payload.deal_summary)}\n"
-        "Task: produce (1) an executive summary (2) key risks explained (bullets) "
-        "(3) RM talking points (bullets)."
+        "Return JSON with: executive_summary (string), key_risks_explained (list), rm_talking_points (list)."
     )
+
+    import json
 
     try:
         resp = oa_client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
-                {"role": "system", "content": "Return JSON only, matching the requested fields."},
+                {"role": "system", "content": "Return JSON only."},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.2,
         )
         content = resp.choices[0].message.content or ""
-    except Exception:
-        d = payload.deal_summary.model_dump()
-        dr = d.get("deal_readiness", {}) or {}
-        return AIExplainResponse(
-            executive_summary=d.get("mandate_fit_summary", ""),
-            key_risks_explained=(dr.get("constraints", []) or [])[:6],
-            rm_talking_points=(d.get("talking_points", []) or [])[:6],
-            disclaimer=_ai_disclaimer(),
-        )
-
-    import json
-
-    try:
         obj = json.loads(content)
         return AIExplainResponse(
             executive_summary=str(obj.get("executive_summary", "")),
@@ -363,19 +351,14 @@ def ai_qa(payload: AIQARequest):
     _guard_no_sensitive(payload.question)
 
     if not oa_client:
-        return AIQAResponse(
-            answer=_fallback_ai_qa(payload.question, payload.deal_summary),
-            disclaimer=_ai_disclaimer(),
-        )
+        return AIQAResponse(answer=_fallback_ai_qa(payload.question, payload.deal_summary), disclaimer=_ai_disclaimer())
 
     deal = payload.deal_summary
     if deal and deal.notes:
         _guard_no_sensitive(deal.notes)
 
     prompt = (
-        "You are a corporate banking RM copilot. Answer the user's question using ONLY the deal summary.\n"
-        "If the deal summary is missing something, say what is missing and propose RM next steps.\n"
-        "Be concise and structured.\n\n"
+        "Answer using ONLY the deal summary. If missing info, say what is missing and RM next steps.\n\n"
         + (f"DEAL SUMMARY:\n{_deal_to_brief(deal)}\n" if deal else "DEAL SUMMARY: (none)\n")
         + f"QUESTION:\n{payload.question}\n"
     )
@@ -384,7 +367,7 @@ def ai_qa(payload: AIQARequest):
         resp = oa_client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
-                {"role": "system", "content": "Be concise. Avoid hallucinations. No confidential data."},
+                {"role": "system", "content": "Be concise. No hallucinations. No confidential data."},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.2,
@@ -394,16 +377,40 @@ def ai_qa(payload: AIQARequest):
             answer = _fallback_ai_qa(payload.question, deal)
         return AIQAResponse(answer=answer, disclaimer=_ai_disclaimer())
     except Exception:
-        return AIQAResponse(
-            answer=_fallback_ai_qa(payload.question, deal),
-            disclaimer=_ai_disclaimer(),
-        )
+        return AIQAResponse(answer=_fallback_ai_qa(payload.question, deal), disclaimer=_ai_disclaimer())
 
 
 # =========================
-# SPA (serve built frontend from Vite dist)
-# IMPORTANT: keep this at the END so API routes above take precedence.
+# SPA: serve built frontend from frontend/dist
 # =========================
-FRONTEND_DIST = ROOT_DIR / "frontend" / "dist"
-if FRONTEND_DIST.is_dir():
-    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="spa")
+FRONTEND_DIST = REPO_ROOT / "frontend" / "dist"
+INDEX_HTML = FRONTEND_DIST / "index.html"
+ASSETS_DIR = FRONTEND_DIST / "assets"
+
+# Serve /assets from Vite build
+if ASSETS_DIR.is_dir():
+    app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
+
+_API_PREFIXES = ("assess", "ai", "api", "docs", "openapi.json", "health", "assets")
+
+
+@app.get("/", include_in_schema=False)
+def spa_root():
+    if INDEX_HTML.is_file():
+        return FileResponse(str(INDEX_HTML))
+    return JSONResponse(
+        {"detail": "Frontend not built. Run: cd frontend && npm ci && npm run build"},
+        status_code=500,
+    )
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+def spa_fallback(full_path: str):
+    if full_path.startswith(_API_PREFIXES):
+        raise HTTPException(status_code=404, detail="Not found")
+    if INDEX_HTML.is_file():
+        return FileResponse(str(INDEX_HTML))
+    return JSONResponse(
+        {"detail": "Frontend not built. Run: cd frontend && npm ci && npm run build"},
+        status_code=500,
+    )
