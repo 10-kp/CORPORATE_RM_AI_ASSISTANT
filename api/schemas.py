@@ -109,25 +109,23 @@ class DealSummaryResponse(BaseModel):
 # AI schemas (Explain + Q&A)
 # ===============================
 
-DecisionLiteral = Literal["Proceed", "Restructure", "Decline", "N/A"]
+from typing import Literal
 
+Decision = Literal["Proceed", "Restructure", "Decline", "N/A"]
 
 class AIQARequest(BaseModel):
     question: str = Field(..., description="User question about the deal summary.")
     deal_summary: Optional[DealSummaryResponse] = None
 
-
 class AIQAResponse(BaseModel):
-    decision: Optional[DecisionLiteral] = None
+    decision: Decision = "N/A"
     rationale: List[str] = Field(default_factory=list)
     conditions_next_steps: List[str] = Field(default_factory=list)
-    answer: Optional[str] = None  # keep for backward compatibility / UI convenience
+    answer: str
     disclaimer: str
-
 
 class AIExplainRequest(BaseModel):
     deal_summary: DealSummaryResponse
-
 
 class AIExplainResponse(BaseModel):
     executive_summary: str
