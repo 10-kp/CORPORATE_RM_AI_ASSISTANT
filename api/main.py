@@ -433,6 +433,22 @@ Deal summary:
         )
 
 
+def _is_go_nogo_question(q: str) -> bool:
+    q = q.lower()
+    return any(x in q for x in [
+        "proceed",
+        "decline",
+        "go/no-go",
+        "go no go",
+        "walk away",
+        "approve",
+        "reject",
+        "proceed or decline",
+        "go or no go",
+        "go/no go",
+    ])
+
+
 @app.post("/ai/qa", response_model=AIQAResponse)
 def ai_qa(req: AIQARequest):
     question = (req.question or "").strip()
@@ -503,8 +519,11 @@ Deal summary (only source of facts):
         obj = json.loads(content) if content else {}
 
         decision = str(obj.get("decision", "N/A")).strip()
-        if decision not in {"Proceed", "Restructure", "Decline", "N/A"}:
-            decision = "N/A"
+        if decision not in {"Proceed", "Restructure", "Decline"}:
+            if _is_go_nogo_question(question):
+                decision = "Restructure"
+            else:
+                decision = "N/A"
 
         rationale = [str(x).strip() for x in (obj.get("rationale") or []) if str(x).strip()]
         conditions = [str(x).strip() for x in (obj.get("conditions_next_steps") or []) if str(x).strip()]
@@ -512,7 +531,6 @@ Deal summary (only source of facts):
         answer = obj.get("answer")
         answer_str = str(answer).strip() if isinstance(answer, (str, int, float)) else None
         if not answer_str:
-            # Provide a readable combined answer for the UI even if it uses only `answer`
             lines = [f"Decision: {decision}"]
             if rationale:
                 lines.append("Rationale:")
@@ -520,6 +538,8 @@ Deal summary (only source of facts):
             if conditions:
                 lines.append("Conditions / next steps:")
                 lines.extend([f"- {x}" for x in conditions[:5]])
+            else:
+                lines.append("Conditions / next steps:\n- None")
             answer_str = "\n".join(lines).strip()
 
         return AIQAResponse(
@@ -531,7 +551,6 @@ Deal summary (only source of facts):
         )
 
     except Exception:
-        # Never fail hard in demo: deterministic fallback
         dr = deal.deal_readiness
         constraints = list(dr.constraints) if dr and getattr(dr, "constraints", None) else []
         actions = list(deal.rm_actions or [])
