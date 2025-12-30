@@ -51,7 +51,14 @@ def health():
 @app.get("/meta/dropdowns", include_in_schema=False)
 def dropdown_meta():
     return {
-        "sectors": ["Manufacturing", "Advanced Technology", "Healthcare", "Food Security", "Renewables", "Other"],
+        "sectors": [
+            "Manufacturing",
+            "Advanced Technology",
+            "Healthcare",
+            "Food Security",
+            "Renewables",
+            "Other",
+        ],
         "outlooks": ["Stable", "Positive", "Negative", "Watch"],
         "trend_3y": ["Improving", "Stable", "Declining"],
         "margin_trend_3y": ["Improving", "Stable", "Under Pressure"],
@@ -364,7 +371,6 @@ def ai_explain(req: AIExplainRequest):
             executive_summary=exec_sum.strip(),
             key_risks_explained=constraints[:10],
             rm_talking_points=(rm_actions[:6] or talking[:6]),
-            missing_information=[],
             disclaimer="Decision-support only. Validate independently before submission.",
         )
 
@@ -375,14 +381,13 @@ Using ONLY the deal summary below, produce a structured analyst explanation.
 Rules:
 - Do NOT repeat the assessment bullets verbatim.
 - Explain causality: why each constraint matters and what it implies for risk/structure.
-- Explicitly state what is missing (max 5 items) that blocks firmer comfort.
 - Do NOT give a final Proceed/Decline recommendation.
+- If information is missing, explicitly state it in the narrative (do not invent facts).
 
 Return STRICT JSON with keys:
 executive_summary (string),
 key_risks_explained (list of strings),
-rm_talking_points (list of strings),
-missing_information (list of strings)
+rm_talking_points (list of strings)
 
 Deal summary:
 {deal.model_dump_json(indent=2)}
@@ -412,13 +417,11 @@ Deal summary:
 
         risks = [str(x).strip() for x in (obj.get("key_risks_explained") or []) if str(x).strip()]
         tps = [str(x).strip() for x in (obj.get("rm_talking_points") or []) if str(x).strip()]
-        missing = [str(x).strip() for x in (obj.get("missing_information") or []) if str(x).strip()]
 
         return AIExplainResponse(
             executive_summary=str(obj.get("executive_summary", "")).strip(),
             key_risks_explained=risks[:10],
             rm_talking_points=tps[:10],
-            missing_information=missing[:5],
             disclaimer="Decision-support only. Validate independently before submission.",
         )
 
@@ -428,25 +431,29 @@ Deal summary:
             executive_summary=exec_sum.strip(),
             key_risks_explained=constraints[:10],
             rm_talking_points=(rm_actions[:6] or talking[:6]),
-            missing_information=[],
             disclaimer="Decision-support only. Validate independently before submission.",
         )
 
 
 def _is_go_nogo_question(q: str) -> bool:
-    q = q.lower()
-    return any(x in q for x in [
-        "proceed",
-        "decline",
-        "go/no-go",
-        "go no go",
-        "walk away",
-        "approve",
-        "reject",
-        "proceed or decline",
-        "go or no go",
-        "go/no go",
-    ])
+    q = (q or "").lower()
+    return any(
+        x in q
+        for x in [
+            "proceed",
+            "decline",
+            "go/no-go",
+            "go no go",
+            "walk away",
+            "approve",
+            "reject",
+            "proceed or decline",
+            "go or no go",
+            "go/no go",
+            "go/no-go decision",
+            "go no-go",
+        ]
+    )
 
 
 @app.post("/ai/qa", response_model=AIQAResponse)
@@ -483,7 +490,7 @@ Question: {question}
 You must answer the question directly.
 
 If the question asks for any go / no-go decision
-(e.g., "Proceed?", "Decline?", "Go/no-go?", "Should we walk away?", "Approve or reject?"),
+(e.g., "Proceed?", "Decline?", "Go/no-go?", "Should we walk away?", "Approve or reject?", "Proceed or Decline?"),
 you MUST choose exactly one: Proceed / Restructure / Decline.
 
 Return STRICT JSON with keys:
@@ -503,9 +510,11 @@ Deal summary (only source of facts):
                     "role": "system",
                     "content": (
                         "You are a credit decision copilot for a corporate bank. "
-                        "Answer the question directly and decisively. "
-                        "You may challenge the assessment conclusion, but you cannot invent facts beyond the deal summary. "
-                        "If information is missing, state exactly what is required and why it matters. "
+                        "You MUST answer the user's question directly. "
+                        "You may disagree with the assessment if justified by the deal summary. "
+                        "For go/no-go questions, you MUST choose Proceed / Restructure / Decline. "
+                        "Justify in 3–5 bullets. "
+                        "Do NOT invent facts beyond the deal summary. "
                         "Avoid repeating the assessment bullets verbatim. "
                         "Return STRICT JSON only."
                     ),
@@ -527,6 +536,9 @@ Deal summary (only source of facts):
 
         rationale = [str(x).strip() for x in (obj.get("rationale") or []) if str(x).strip()]
         conditions = [str(x).strip() for x in (obj.get("conditions_next_steps") or []) if str(x).strip()]
+
+        # Force backend-generated answer to reflect enforced decision
+        obj["answer"] = None
 
         answer = obj.get("answer")
         answer_str = str(answer).strip() if isinstance(answer, (str, int, float)) else None
