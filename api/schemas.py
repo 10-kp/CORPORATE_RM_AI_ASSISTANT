@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Dict, List, Literal, Optional, Any
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -109,19 +109,29 @@ class DealSummaryResponse(BaseModel):
 # AI schemas (Explain + Q&A)
 # ===============================
 
+DecisionLiteral = Literal["Proceed", "Restructure", "Decline", "N/A"]
+
+
 class AIQARequest(BaseModel):
     question: str = Field(..., description="User question about the deal summary.")
     deal_summary: Optional[DealSummaryResponse] = None
 
+
 class AIQAResponse(BaseModel):
-    answer: str
+    decision: Optional[DecisionLiteral] = None
+    rationale: List[str] = Field(default_factory=list)
+    conditions_next_steps: List[str] = Field(default_factory=list)
+    answer: Optional[str] = None  # keep for backward compatibility / UI convenience
     disclaimer: str
+
 
 class AIExplainRequest(BaseModel):
     deal_summary: DealSummaryResponse
+
 
 class AIExplainResponse(BaseModel):
     executive_summary: str
     key_risks_explained: List[str] = Field(default_factory=list)
     rm_talking_points: List[str] = Field(default_factory=list)
+    missing_information: List[str] = Field(default_factory=list)
     disclaimer: str

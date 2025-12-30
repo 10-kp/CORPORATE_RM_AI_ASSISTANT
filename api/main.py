@@ -144,7 +144,7 @@ MARGIN_MAP = {
     "declining": "Under Pressure",
 }
 
-# revenue_trend_3y allowed (commonly): Improving | Stable | Declining
+# revenue_trend_3y allowed: Improving | Stable | Declining
 TREND_MAP = {
     "improving": "Improving",
     "stable": "Stable",
@@ -262,7 +262,7 @@ def _coerce_to_deal_input(raw: Dict[str, Any]) -> DealInputRequest:
         },
         "financial_signals": {
             "revenue_trend_3y": _norm_trend(_get_any(flat, "revenue_trend_3y")),
-            "margin_trend_3y": _norm_margin(_get_any(flat, "margin_trend_3y")),  # FIX: no fin_obj here
+            "margin_trend_3y": _norm_margin(_get_any(flat, "margin_trend_3y")),
             "leverage_position": _norm_leverage(_get_any(flat, "leverage_position")),
             "cashflow_quality": _get_any(flat, "cashflow_quality", "cash_flow_quality"),
             "earnings_volatility": _get_any(flat, "earnings_volatility"),
@@ -279,6 +279,7 @@ def _coerce_to_deal_input(raw: Dict[str, Any]) -> DealInputRequest:
 # Core assessment
 # =========================
 RAROC_HURDLE = 5.0
+
 
 def _assess_deal(payload: DealInputRequest) -> DealSummaryResponse:
     _guard_no_sensitive(payload.client_name, payload.group_name or "", payload.notes or "")
@@ -303,8 +304,6 @@ def _assess_deal(payload: DealInputRequest) -> DealSummaryResponse:
         constraints.append(f"Weak eligibility score ({s:.1f}/6).")
 
     raroc = payload.indicative_raroc_pct
-
-# RAROC is mandatory now; still guard just in case
     if raroc is None:
         constraints.append("RAROC not provided.")
         rm_actions.append("Input RAROC estimate for screening.")
@@ -354,6 +353,7 @@ def ai_explain(req: AIExplainRequest):
     rm_actions = list(deal.rm_actions or [])
     talking = list(deal.talking_points or [])
 
+    # Deterministic fallback
     if oa_client is None:
         exec_sum = deal.mandate_fit_summary or ""
         if strengths:
@@ -364,48 +364,71 @@ def ai_explain(req: AIExplainRequest):
             executive_summary=exec_sum.strip(),
             key_risks_explained=constraints[:10],
             rm_talking_points=(rm_actions[:6] or talking[:6]),
+            missing_information=[],
             disclaimer="Decision-support only. Validate independently before submission.",
         )
 
-    prompt = (
-        "You are a corporate banking RM copilot. Be concise and conservative. "
-        "Use ONLY the provided summary; do not invent facts. "
-        "Return STRICT JSON with keys: executive_summary, key_risks_explained, rm_talking_points.\n\n"
-        f"SUMMARY:\n{deal.model_dump_json(indent=2)}"
-    )
-
     try:
+        prompt = f"""
+Using ONLY the deal summary below, produce a structured analyst explanation.
+
+Rules:
+- Do NOT repeat the assessment bullets verbatim.
+- Explain causality: why each constraint matters and what it implies for risk/structure.
+- Explicitly state what is missing (max 5 items) that blocks firmer comfort.
+- Do NOT give a final Proceed/Decline recommendation.
+
+Return STRICT JSON with keys:
+executive_summary (string),
+key_risks_explained (list of strings),
+rm_talking_points (list of strings),
+missing_information (list of strings)
+
+Deal summary:
+{deal.model_dump_json(indent=2)}
+""".strip()
+
         resp = oa_client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
-                {"role": "system", "content": (
-        "You are a corporate banking Relationship Manager preparing a credit discussion note. "
-        "Be critical, commercially realistic, and conservative. "
-        "Explicitly link financial signals (margins, leverage, cash flow, transparency) "
-        "to credit risk, headroom, and structuring options. "
-        "Do NOT decline unless risks are clearly terminal. "
-        "Avoid generic advice. Use banking language. "
-        "Return STRICT JSON only."
-    ),
-},
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a senior credit analyst writing an internal note. "
+                        "Be critical and specific. Link financial signals and screening outputs "
+                        "to credit risk, headroom, and concrete structuring levers. "
+                        "Do NOT restate the assessment output verbatim; add interpretation. "
+                        "Do NOT invent facts beyond the deal summary. "
+                        "Return STRICT JSON only."
+                    ),
+                },
                 {"role": "user", "content": prompt},
             ],
             temperature=0.2,
         )
+
         content = (resp.choices[0].message.content or "").strip()
         obj = json.loads(content) if content else {}
+
+        risks = [str(x).strip() for x in (obj.get("key_risks_explained") or []) if str(x).strip()]
+        tps = [str(x).strip() for x in (obj.get("rm_talking_points") or []) if str(x).strip()]
+        missing = [str(x).strip() for x in (obj.get("missing_information") or []) if str(x).strip()]
+
         return AIExplainResponse(
             executive_summary=str(obj.get("executive_summary", "")).strip(),
-            key_risks_explained=list(obj.get("key_risks_explained", []))[:10],
-            rm_talking_points=list(obj.get("rm_talking_points", []))[:10],
+            key_risks_explained=risks[:10],
+            rm_talking_points=tps[:10],
+            missing_information=missing[:5],
             disclaimer="Decision-support only. Validate independently before submission.",
         )
+
     except Exception:
         exec_sum = deal.mandate_fit_summary or ""
         return AIExplainResponse(
             executive_summary=exec_sum.strip(),
             key_risks_explained=constraints[:10],
             rm_talking_points=(rm_actions[:6] or talking[:6]),
+            missing_information=[],
             disclaimer="Decision-support only. Validate independently before submission.",
         )
 
@@ -417,78 +440,120 @@ def ai_qa(req: AIQARequest):
         raise HTTPException(status_code=400, detail="Question is required.")
 
     deal = req.deal_summary
-
-    # If somehow deal_summary is missing, do NOT crash
     if deal is None:
         return AIQAResponse(
+            decision="N/A",
+            rationale=[],
+            conditions_next_steps=[],
             answer="Please run an assessment first, then ask your question again.",
             disclaimer="Decision-support only.",
         )
 
     _guard_no_sensitive(question, deal.client_name, deal.group_name or "", deal.notes or "")
 
-    # If AI not configured, do NOT 500
     if oa_client is None:
         return AIQAResponse(
+            decision="N/A",
+            rationale=[],
+            conditions_next_steps=[],
             answer="AI is not enabled in this environment.",
             disclaimer="Decision-support only.",
         )
 
-    prompt = (
-        "You are a corporate banking RM copilot. Answer the question using ONLY the provided deal summary. "
-        "If the answer is not supported by the summary, say what is missing.\n\n"
-        f"QUESTION:\n{question}\n\n"
-        f"DEAL SUMMARY:\n{deal.model_dump_json(indent=2)}"
-    )
-
     try:
+        prompt = f"""
+Question: {question}
+
+You must answer the question directly.
+
+If the question asks whether to proceed (e.g., "Proceed?", "Should we proceed?", "Go/no-go"),
+you MUST choose exactly one: Proceed / Restructure / Decline.
+
+Return STRICT JSON with keys:
+decision (one of: Proceed, Restructure, Decline, N/A),
+rationale (list of 3-5 bullets),
+conditions_next_steps (list; can be empty),
+answer (string; optional)
+
+Deal summary (only source of facts):
+{deal.model_dump_json(indent=2)}
+""".strip()
+
         resp = oa_client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
-                {"role": "system", "content": (
-        "You are a corporate banking Relationship Manager answering questions for a credit discussion. "
-        "Be critical and constructive. "
-        "Ground answers in the deal summary only. "
-        "If risks outweigh mitigants, say so clearly. "
-        "If information is missing, state what is required before proceeding. "
-        "Use professional banking language. Do not invent facts."
-    ),
-},
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a credit decision copilot for a corporate bank. "
+                        "Answer the question directly and decisively. "
+                        "You may challenge the assessment conclusion, but you cannot invent facts beyond the deal summary. "
+                        "If information is missing, state exactly what is required and why it matters. "
+                        "Avoid repeating the assessment bullets verbatim. "
+                        "Return STRICT JSON only."
+                    ),
+                },
                 {"role": "user", "content": prompt},
             ],
             temperature=0.2,
         )
-        answer = (resp.choices[0].message.content or "").strip()
 
-        # If model returns empty text, still avoid 500
-        if not answer:
-            answer = "Insufficient information in the current summary to answer this. Please add more deal details."
+        content = (resp.choices[0].message.content or "").strip()
+        obj = json.loads(content) if content else {}
+
+        decision = str(obj.get("decision", "N/A")).strip()
+        if decision not in {"Proceed", "Restructure", "Decline", "N/A"}:
+            decision = "N/A"
+
+        rationale = [str(x).strip() for x in (obj.get("rationale") or []) if str(x).strip()]
+        conditions = [str(x).strip() for x in (obj.get("conditions_next_steps") or []) if str(x).strip()]
+
+        answer = obj.get("answer")
+        answer_str = str(answer).strip() if isinstance(answer, (str, int, float)) else None
+        if not answer_str:
+            # Provide a readable combined answer for the UI even if it uses only `answer`
+            lines = [f"Decision: {decision}"]
+            if rationale:
+                lines.append("Rationale:")
+                lines.extend([f"- {x}" for x in rationale[:5]])
+            if conditions:
+                lines.append("Conditions / next steps:")
+                lines.extend([f"- {x}" for x in conditions[:5]])
+            answer_str = "\n".join(lines).strip()
 
         return AIQAResponse(
-            answer=answer,
+            decision=decision,  # type: ignore
+            rationale=rationale[:5],
+            conditions_next_steps=conditions[:5],
+            answer=answer_str,
             disclaimer="Decision-support only. Validate independently before submission.",
         )
 
     except Exception:
-        # Never fail hard in demo: return deterministic fallback
+        # Never fail hard in demo: deterministic fallback
         dr = deal.deal_readiness
         constraints = list(dr.constraints) if dr and getattr(dr, "constraints", None) else []
         actions = list(deal.rm_actions or [])
 
-        fallback = []
+        fallback_lines: List[str] = []
+        fallback_lines.append("Decision: N/A")
         if actions:
-            fallback.append("Recommended actions:")
-            fallback.extend([f"- {x}" for x in actions[:6]])
+            fallback_lines.append("Recommended actions:")
+            fallback_lines.extend([f"- {x}" for x in actions[:6]])
         if constraints:
-            fallback.append("\nKey constraints:")
-            fallback.extend([f"- {x}" for x in constraints[:6]])
-        if not fallback:
-            fallback.append("Assessment summary is insufficient to answer this. Please add more deal details.")
+            fallback_lines.append("Key constraints:")
+            fallback_lines.extend([f"- {x}" for x in constraints[:6]])
+        if not actions and not constraints:
+            fallback_lines.append("Assessment summary is insufficient to answer this. Please add more deal details.")
 
         return AIQAResponse(
-            answer="\n".join(fallback).strip(),
+            decision="N/A",
+            rationale=[],
+            conditions_next_steps=[],
+            answer="\n".join(fallback_lines).strip(),
             disclaimer="Decision-support only. Validate independently before submission.",
         )
+
 
 # =========================
 # SPA serving

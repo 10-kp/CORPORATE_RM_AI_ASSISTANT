@@ -33,11 +33,17 @@ type AIExplainResponse = {
   executive_summary?: string;
   key_risks_explained?: string[];
   rm_talking_points?: string[];
+  missing_information?: string[];
   disclaimer?: string;
 };
 
+type Decision = "Proceed" | "Restructure" | "Decline" | "N/A";
+
 type AIQAResponse = {
-  answer: string;
+  decision?: Decision | null;
+  rationale?: string[];
+  conditions_next_steps?: string[];
+  answer?: string | null; // backend also returns a combined "answer" string
   disclaimer?: string;
 };
 
@@ -78,9 +84,39 @@ function isNumberOrEmpty(v: string): boolean {
 function formatExplain(resp: AIExplainResponse): string {
   const parts: string[] = [];
   if (resp.executive_summary) parts.push(`Executive summary\n${resp.executive_summary}`);
-  if (resp.key_risks_explained?.length) parts.push(`Key risks\n- ${resp.key_risks_explained.join("\n- ")}`);
+  if (resp.key_risks_explained?.length) parts.push(`Key risks (explained)\n- ${resp.key_risks_explained.join("\n- ")}`);
+  if (resp.missing_information?.length) parts.push(`Missing information\n- ${resp.missing_information.join("\n- ")}`);
   if (resp.rm_talking_points?.length) parts.push(`RM talking points\n- ${resp.rm_talking_points.join("\n- ")}`);
   if (resp.disclaimer) parts.push(`Disclaimer\n${resp.disclaimer}`);
+  return parts.join("\n\n");
+}
+
+function formatQA(resp: AIQAResponse): string {
+  const parts: string[] = [];
+
+  const decision = (resp.decision || "N/A") as Decision;
+  const rationale = Array.isArray(resp.rationale) ? resp.rationale.filter(Boolean) : [];
+  const conditions = Array.isArray(resp.conditions_next_steps) ? resp.conditions_next_steps.filter(Boolean) : [];
+
+  // Prefer structured output; fall back to combined answer string if present.
+  if (resp.decision || rationale.length || conditions.length) {
+    parts.push(`Decision\n${decision}`);
+
+    if (rationale.length) parts.push(`Rationale\n- ${rationale.slice(0, 5).join("\n- ")}`);
+
+    if (conditions.length) {
+      parts.push(`Conditions / next steps\n- ${conditions.slice(0, 5).join("\n- ")}`);
+    } else {
+      parts.push(`Conditions / next steps\nNone`);
+    }
+  } else if (resp.answer) {
+    parts.push(`Answer\n${resp.answer}`);
+  } else {
+    parts.push(`Answer\nNo response returned.`);
+  }
+
+  if (resp.disclaimer) parts.push(`Disclaimer\n${resp.disclaimer}`);
+
   return parts.join("\n\n");
 }
 
@@ -94,7 +130,10 @@ function ReadableCard({ text }: { text: string }) {
     .map((b) => b.trim())
     .filter(Boolean)
     .map((block) => {
-      const lines = block.split("\n").map((l) => l.trim()).filter(Boolean);
+      const lines = block
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
       const title = (lines[0] || "").replace(/:$/, "");
       const rest = lines.slice(1);
 
@@ -110,9 +149,7 @@ function ReadableCard({ text }: { text: string }) {
         <div key={i} className="cardout-section">
           <div className="cardout-title">{s.title}</div>
           {s.bullets.length > 0 ? (
-            <ul className="cardout-list">
-              {s.bullets.map((b, j) => <li key={j}>{b}</li>)}
-            </ul>
+            <ul className="cardout-list">{s.bullets.map((b, j) => <li key={j}>{b}</li>)}</ul>
           ) : (
             <div className="cardout-text">{s.body}</div>
           )}
@@ -124,8 +161,7 @@ function ReadableCard({ text }: { text: string }) {
 
 function Badge({ status }: { status: string }) {
   const s = (status || "").toLowerCase();
-  const cls =
-    s === "strong" ? "badge badge-strong" : s === "conditional" ? "badge badge-conditional" : "badge badge-weak";
+  const cls = s === "strong" ? "badge badge-strong" : s === "conditional" ? "badge badge-conditional" : "badge badge-weak";
   return <span className={cls}>{status || "—"}</span>;
 }
 
@@ -150,27 +186,21 @@ function AssessmentReadable({ assessment }: { assessment: DealSummaryResponse })
       {Array.isArray(dr?.constraints) && dr.constraints.length > 0 && (
         <>
           <div className="readable-title">Constraints</div>
-          <ul className="readable-list">
-            {dr.constraints.map((c: string, i: number) => <li key={i}>{c}</li>)}
-          </ul>
+          <ul className="readable-list">{dr.constraints.map((c: string, i: number) => <li key={i}>{c}</li>)}</ul>
         </>
       )}
 
       {Array.isArray(assessment?.rm_actions) && assessment.rm_actions.length > 0 && (
         <>
           <div className="readable-title">RM actions</div>
-          <ul className="readable-list">
-            {assessment.rm_actions.map((a: string, i: number) => <li key={i}>{a}</li>)}
-          </ul>
+          <ul className="readable-list">{assessment.rm_actions.map((a: string, i: number) => <li key={i}>{a}</li>)}</ul>
         </>
       )}
 
       {Array.isArray(dr?.strengths) && dr.strengths.length > 0 && (
         <>
           <div className="readable-title">Strengths</div>
-          <ul className="readable-list">
-            {dr.strengths.map((s: string, i: number) => <li key={i}>{s}</li>)}
-          </ul>
+          <ul className="readable-list">{dr.strengths.map((s: string, i: number) => <li key={i}>{s}</li>)}</ul>
         </>
       )}
     </div>
@@ -178,10 +208,9 @@ function AssessmentReadable({ assessment }: { assessment: DealSummaryResponse })
 }
 
 export default function App() {
-  const API_BASE =  (import.meta as any).env?.VITE_API_BASE?.trim() ||
-  ((window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
-    ? "http://127.0.0.1:8000"
-    : "");
+  const API_BASE =
+    (import.meta as any).env?.VITE_API_BASE?.trim() ||
+    ((window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") ? "http://127.0.0.1:8000" : "");
 
   // Form state (left panel)
   const [clientName, setClientName] = useState<string>("");
@@ -204,7 +233,7 @@ export default function App() {
   const [capex, setCapex] = useState<string>(INVESTMENT[1]);
   const [transparency, setTransparency] = useState<string>(TRANSPARENCY[1]);
 
-  const [indicativeRarocPct, setIndicativeRarocPct] = useState<string>("5.0%");
+  const [indicativeRarocPct, setIndicativeRarocPct] = useState<string>("5.0");
   const [notes, setNotes] = useState<string>("");
 
   // Outputs (right panel)
@@ -330,11 +359,7 @@ export default function App() {
         deal_summary: assessResult,
       });
 
-      // Render as sections
-      const text = resp.disclaimer
-        ? `Answer\n${resp.answer}\n\nDisclaimer\n${resp.disclaimer}`
-        : `Answer\n${resp.answer}`;
-      setAiQA(text);
+      setAiQA(formatQA(resp));
     } catch (e: any) {
       setErrorMsg(e?.message || "Q&A failed.");
     } finally {
@@ -378,7 +403,9 @@ export default function App() {
           <label>Strategic sector</label>
           <select value={sector} onChange={(e) => setSector(e.target.value)}>
             {SECTORS.map((s) => (
-              <option key={s} value={s}>{s}</option>
+              <option key={s} value={s}>
+                {s}
+              </option>
             ))}
           </select>
 
@@ -387,7 +414,9 @@ export default function App() {
           <label>System</label>
           <select value={ratingSystem} onChange={(e) => setRatingSystem(e.target.value)}>
             {RATING_SYSTEMS.map((s) => (
-              <option key={s} value={s}>{s}</option>
+              <option key={s} value={s}>
+                {s}
+              </option>
             ))}
           </select>
 
@@ -397,7 +426,9 @@ export default function App() {
           <label>Outlook</label>
           <select value={outlook} onChange={(e) => setOutlook(e.target.value)}>
             {OUTLOOKS.map((o) => (
-              <option key={o} value={o}>{o}</option>
+              <option key={o} value={o}>
+                {o}
+              </option>
             ))}
           </select>
 
@@ -417,62 +448,69 @@ export default function App() {
           <label>Revenue trend (3Y)</label>
           <select value={revTrend} onChange={(e) => setRevTrend(e.target.value)}>
             {TRENDS.map((t) => (
-              <option key={t} value={t}>{t}</option>
+              <option key={t} value={t}>
+                {t}
+              </option>
             ))}
           </select>
 
           <label>Margin trend (3Y)</label>
           <select value={marginTrend} onChange={(e) => setMarginTrend(e.target.value)}>
             {MARGIN_TRENDS.map((t) => (
-              <option key={t} value={t}>{t}</option>
+              <option key={t} value={t}>
+                {t}
+              </option>
             ))}
           </select>
 
           <label>Leverage position</label>
           <select value={leveragePos} onChange={(e) => setLeveragePos(e.target.value)}>
             {POSITIONS.map((p) => (
-              <option key={p} value={p}>{p}</option>
+              <option key={p} value={p}>
+                {p}
+              </option>
             ))}
           </select>
 
           <label>Cash flow quality</label>
           <select value={cfQuality} onChange={(e) => setCfQuality(e.target.value)}>
             {QUALITIES.map((q) => (
-              <option key={q} value={q}>{q}</option>
+              <option key={q} value={q}>
+                {q}
+              </option>
             ))}
           </select>
 
           <label>Earnings volatility</label>
           <select value={earnVol} onChange={(e) => setEarnVol(e.target.value)}>
             {VOLATILITY.map((v) => (
-              <option key={v} value={v}>{v}</option>
+              <option key={v} value={v}>
+                {v}
+              </option>
             ))}
           </select>
 
           <label>Capex / growth investment</label>
           <select value={capex} onChange={(e) => setCapex(e.target.value)}>
             {INVESTMENT.map((i) => (
-              <option key={i} value={i}>{i}</option>
+              <option key={i} value={i}>
+                {i}
+              </option>
             ))}
           </select>
 
           <label>Financial transparency</label>
           <select value={transparency} onChange={(e) => setTransparency(e.target.value)}>
             {TRANSPARENCY.map((t) => (
-              <option key={t} value={t}>{t}</option>
+              <option key={t} value={t}>
+                {t}
+              </option>
             ))}
           </select>
 
           <h2>RAROC</h2>
           <label>RAROC (%)</label>
-          <input
-            type="number"
-            step="0.1"
-            min="0"
-            max="100"
-            value={indicativeRarocPct}
-            onChange={(e) => setIndicativeRarocPct(e.target.value)}
-          />
+          <input type="number" step="0.1" min="0" max="100" value={indicativeRarocPct} onChange={(e) => setIndicativeRarocPct(e.target.value)} />
           <div className="subtle">RM-entered screening estimate. Indicative only; final approval subject to Credit assessment.</div>
 
           <h2>Notes</h2>
@@ -510,7 +548,9 @@ export default function App() {
               {showRaw && <pre className="output">{asText(assessResult)}</pre>}
             </>
           ) : (
-            <div className="subtle" style={{ marginTop: 10 }}>No assessment yet.</div>
+            <div className="subtle" style={{ marginTop: 10 }}>
+              No assessment yet.
+            </div>
           )}
 
           <div className="box">
@@ -532,11 +572,7 @@ export default function App() {
             <h3>AI: Deal Q&amp;A</h3>
             <div className="subtle">Ask a question; if an assessment exists, it is used as context.</div>
             <div className="qa-row">
-              <input
-                value={qaQuestion}
-                onChange={(e) => setQaQuestion(e.target.value)}
-                placeholder="e.g., Should the RM proceed or decline?"
-              />
+              <input value={qaQuestion} onChange={(e) => setQaQuestion(e.target.value)} placeholder="e.g., Should we proceed, restructure, or decline?" />
               <button onClick={onAsk} disabled={busyQA}>
                 {busyQA ? "Asking..." : "Ask"}
               </button>
