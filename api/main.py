@@ -466,7 +466,8 @@ Question: {question}
 
 You must answer the question directly.
 
-If the question asks whether to proceed (e.g., "Proceed?", "Should we proceed?", "Go/no-go"),
+If the question asks for any go / no-go decision
+(e.g., "Proceed?", "Decline?", "Go/no-go?", "Should we walk away?", "Approve or reject?"),
 you MUST choose exactly one: Proceed / Restructure / Decline.
 
 Return STRICT JSON with keys:
