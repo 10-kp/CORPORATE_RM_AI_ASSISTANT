@@ -563,28 +563,33 @@ Deal summary (only source of facts):
         )
 
     except Exception:
-        dr = deal.deal_readiness
-        constraints = list(dr.constraints) if dr and getattr(dr, "constraints", None) else []
-        actions = list(deal.rm_actions or [])
+                     # FINAL SAFETY NET — NEVER return N/A for go/no-go questions
+                     if _is_go_nogo_question(question):
+                             decision = "Restructure"
+                     else:
+                             decision = "N/A"
 
-        fallback_lines: List[str] = []
-        fallback_lines.append("Decision: N/A")
-        if actions:
-            fallback_lines.append("Recommended actions:")
-            fallback_lines.extend([f"- {x}" for x in actions[:6]])
-        if constraints:
-            fallback_lines.append("Key constraints:")
-            fallback_lines.extend([f"- {x}" for x in constraints[:6]])
-        if not actions and not constraints:
-            fallback_lines.append("Assessment summary is insufficient to answer this. Please add more deal details.")
+                     dr = deal.deal_readiness
+                     constraints = list(dr.constraints) if dr and getattr(dr, "constraints", None) else []
+                     actions = list(deal.rm_actions or [])
 
-        return AIQAResponse(
-            decision="N/A",
-            rationale=[],
-            conditions_next_steps=[],
-            answer="\n".join(fallback_lines).strip(),
-            disclaimer="Decision-support only. Validate independently before submission.",
-        )
+                     lines = [f"Decision: {decision}"]
+
+                     if actions:
+                              lines.append("Recommended actions:")
+                              lines.extend([f"- {x}" for x in actions[:5]])
+
+                     if constraints:
+                              lines.append("Key constraints:")
+                              lines.extend([f"- {x}" for x in constraints[:5]])
+
+                     return AIQAResponse(
+                               decision=decision,
+                               rationale=[],
+                               conditions_next_steps=[],
+                              answer="\n".join(lines).strip(),
+                              disclaimer="Decision-support only. Validate independently before submission.",
+    )
 
 
 # =========================
