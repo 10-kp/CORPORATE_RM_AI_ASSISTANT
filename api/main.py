@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import ValidationError
 
 # =========================
 # Env
@@ -206,54 +207,41 @@ def _norm_drivers(v):
 # Payload compatibility
 # =========================
 def _coerce_to_deal_input(raw: Dict[str, Any]) -> DealInputRequest:
-    # --- Case B: nested payload ---
-    if isinstance(raw.get("sector"), dict) or isinstance(raw.get("eligibility"), dict) or isinstance(raw.get("financials"), dict):
-        sector_obj = raw.get("sector") or {}
-        elig_obj = raw.get("eligibility") or {}
-        fin_obj = raw.get("financials") or {}
+    """
+    Supports:
+    A) NEW nested payload (frontend sends DealInputRequest shape):
+       {
+         client_name, group_name, sector,
+         rating_anchor:{...}, eligibility:{...}, financial_signals:{...},
+         indicative_raroc_pct, notes
+       }
 
-        coerced = {
-            "client_name": _get_any(sector_obj, "client_name", default=_get_any(raw, "client_name", default="")),
-            "group_name": _get_any(sector_obj, "group_name", default=_get_any(raw, "group_name")),
-            "sector": _norm_sector(
-                _get_any(
-                    sector_obj,
-                    "strategic_sector",
-                    "sector",
-                    default=_get_any(raw, "strategic_sector", "sector", default=""),
-                )
-            ),
-            "rating_anchor": {
-                "system": _get_any(sector_obj, "rating_system", default=_get_any(raw, "rating_system", default="")),
-                "grade": str(_get_any(sector_obj, "rating_grade", default=_get_any(raw, "rating_grade", default=""))),
-                "outlook": _get_any(sector_obj, "outlook", default=_get_any(raw, "outlook")),
-            },
-            "eligibility": {
-                "score": float(
-                    _get_any(elig_obj, "eligibility_score", "score", default=_get_any(raw, "eligibility_score", default=0.0)) or 0.0
-                ),
-                "drivers": _norm_drivers(
-                    _get_any(elig_obj, "eligibility_drivers", "drivers", default=_get_any(raw, "eligibility_drivers"))
-                ) or [],
-            },
-            "financial_signals": {
-                "revenue_trend_3y": _norm_trend(_get_any(fin_obj, "revenue_trend_3y", default=_get_any(raw, "revenue_trend_3y"))),
-                "margin_trend_3y": _norm_margin(_get_any(fin_obj, "margin_trend_3y", default=_get_any(raw, "margin_trend_3y"))),
-                "leverage_position": _norm_leverage(_get_any(fin_obj, "leverage_position", default=_get_any(raw, "leverage_position"))),
-                "cashflow_quality": _get_any(
-                    fin_obj, "cashflow_quality", "cash_flow_quality", default=_get_any(raw, "cashflow_quality", "cash_flow_quality")
-                ),
-                "earnings_volatility": _get_any(fin_obj, "earnings_volatility", default=_get_any(raw, "earnings_volatility")),
-                "capex_growth_investment": _get_any(fin_obj, "capex_growth_investment", default=_get_any(raw, "capex_growth_investment")),
-                "financial_transparency": _get_any(fin_obj, "financial_transparency", default=_get_any(raw, "financial_transparency")),
-            },
-            "indicative_raroc_pct": _get_any(raw, "indicative_raroc_pct"),
-            "notes": _get_any(raw, "notes"),
-        }
-        return DealInputRequest.model_validate(coerced)
+    B) Legacy flat payload:
+       { client_name, sector/strategic_sector, rating_system, rating_grade, ... }
+    """
 
-    # --- Case A: flat payload ---
+    # ---- Case A: already nested (correct schema) ----
+    if (
+        isinstance(raw.get("rating_anchor"), dict)
+        and isinstance(raw.get("eligibility"), dict)
+        and isinstance(raw.get("financial_signals"), dict)
+    ):
+        # Normalize a few fields to be forgiving
+        fin = dict(raw.get("financial_signals") or {})
+        fin["revenue_trend_3y"] = _norm_trend(fin.get("revenue_trend_3y")) or fin.get("revenue_trend_3y")
+        fin["margin_trend_3y"] = _norm_margin(fin.get("margin_trend_3y")) or fin.get("margin_trend_3y")
+        fin["leverage_position"] = _norm_leverage(fin.get("leverage_position")) or fin.get("leverage_position")
+
+        nested = dict(raw)
+        nested["sector"] = _norm_sector(str(nested.get("sector") or "Other"))
+        nested["financial_signals"] = fin
+
+        # Validate directly against Pydantic schema
+        return DealInputRequest.model_validate(nested)
+
+    # ---- Case B: legacy/flat payload ----
     flat = raw
+
     coerced = {
         "client_name": _get_any(flat, "client_name", default=""),
         "group_name": _get_any(flat, "group_name"),
@@ -262,6 +250,7 @@ def _coerce_to_deal_input(raw: Dict[str, Any]) -> DealInputRequest:
             "system": _get_any(flat, "rating_system", default=""),
             "grade": str(_get_any(flat, "rating_grade", default="")),
             "outlook": _get_any(flat, "outlook"),
+            "as_of": _get_any(flat, "as_of"),
         },
         "eligibility": {
             "score": float(_get_any(flat, "eligibility_score", default=0.0) or 0.0),
@@ -279,6 +268,7 @@ def _coerce_to_deal_input(raw: Dict[str, Any]) -> DealInputRequest:
         "indicative_raroc_pct": _get_any(flat, "indicative_raroc_pct"),
         "notes": _get_any(flat, "notes"),
     }
+
     return DealInputRequest.model_validate(coerced)
 
 
@@ -345,7 +335,11 @@ def _assess_deal(payload: DealInputRequest) -> DealSummaryResponse:
 # =========================
 @app.post("/assess", response_model=DealSummaryResponse)
 def assess_deal(payload: Dict[str, Any]):
-    deal_input = _coerce_to_deal_input(payload)
+    # Prevent silent 500: return 422 with validation details
+    try:
+        deal_input = _coerce_to_deal_input(payload)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors())
     return _assess_deal(deal_input)
 
 
@@ -452,6 +446,7 @@ def _is_go_nogo_question(q: str) -> bool:
             "go/no go",
             "go/no-go decision",
             "go no-go",
+            "go no-go?",
         ]
     )
 
@@ -563,33 +558,33 @@ Deal summary (only source of facts):
         )
 
     except Exception:
-                     # FINAL SAFETY NET — NEVER return N/A for go/no-go questions
-                     if _is_go_nogo_question(question):
-                             decision = "Restructure"
-                     else:
-                             decision = "N/A"
+        # FINAL SAFETY NET — NEVER return N/A for go/no-go questions
+        if _is_go_nogo_question(question):
+            decision = "Restructure"
+        else:
+            decision = "N/A"
 
-                     dr = deal.deal_readiness
-                     constraints = list(dr.constraints) if dr and getattr(dr, "constraints", None) else []
-                     actions = list(deal.rm_actions or [])
+        dr = deal.deal_readiness
+        constraints = list(dr.constraints) if dr and getattr(dr, "constraints", None) else []
+        actions = list(deal.rm_actions or [])
 
-                     lines = [f"Decision: {decision}"]
+        lines = [f"Decision: {decision}"]
 
-                     if actions:
-                              lines.append("Recommended actions:")
-                              lines.extend([f"- {x}" for x in actions[:5]])
+        if actions:
+            lines.append("Recommended actions:")
+            lines.extend([f"- {x}" for x in actions[:5]])
 
-                     if constraints:
-                              lines.append("Key constraints:")
-                              lines.extend([f"- {x}" for x in constraints[:5]])
+        if constraints:
+            lines.append("Key constraints:")
+            lines.extend([f"- {x}" for x in constraints[:5]])
 
-                     return AIQAResponse(
-                               decision=decision,
-                               rationale=[],
-                               conditions_next_steps=[],
-                              answer="\n".join(lines).strip(),
-                              disclaimer="Decision-support only. Validate independently before submission.",
-    )
+        return AIQAResponse(
+            decision=decision,
+            rationale=[],
+            conditions_next_steps=[],
+            answer="\n".join(lines).strip(),
+            disclaimer="Decision-support only. Validate independently before submission.",
+        )
 
 
 # =========================
