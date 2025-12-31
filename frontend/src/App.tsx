@@ -1,385 +1,288 @@
-// frontend/src/App.tsx
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 
-type DealInputRequest = {
-  client_name: string;
-  group_name?: string | null;
-  strategic_sector: string;
+/**
+ * API base:
+ * - Local dev: http://127.0.0.1:8000
+ * - Render: same-origin (empty string) so fetch("/assess") works
+ */
+function getApiBase() {
+  const envBase = (import.meta as any).env?.VITE_API_BASE?.trim?.() || "";
+  if (envBase) return envBase;
+  const host = window.location.hostname;
+  if (host === "localhost" || host === "127.0.0.1") return "http://127.0.0.1:8000";
+  return "";
+}
 
-  rating_system: string;
-  rating_grade: string;
+const API_BASE = getApiBase();
+
+type StrategicSector =
+  | "Manufacturing"
+  | "Advanced Technology"
+  | "Healthcare"
+  | "Food Security"
+  | "Renewables"
+  | "Other";
+
+type Trend3Y = "Improving" | "Stable" | "Declining";
+type MarginTrend3Y = "Improving" | "Stable" | "Under Pressure";
+type Signal3 = "Strong" | "Adequate" | "Weak";
+type Leverage = "Low" | "Moderate" | "Elevated";
+type Volatility = "Low" | "Moderate" | "High";
+type Investment = "High" | "Moderate" | "Low";
+
+type DealReadinessStatus = "Strong" | "Conditional" | "Weak";
+type Decision = "Proceed" | "Restructure" | "Decline" | "N/A";
+
+type RatingAnchor = {
+  system: string;
+  grade: string;
   outlook?: string | null;
   as_of?: string | null;
+};
 
-  eligibility_score: number;
-  eligibility_drivers?: string | null;
+type Eligibility = {
+  score: number;
+  drivers: string[];
+  breakdown?: Record<string, number>;
+};
 
-  revenue_trend_3y: string;
-  margin_trend_3y: string;
-  leverage_position: string;
-  cash_flow_quality: string;
-  earnings_volatility: string;
-  capex_growth_investment: string;
-  financial_transparency: string;
+type FinancialSignals = {
+  revenue_trend_3y: Trend3Y;
+  margin_trend_3y: MarginTrend3Y;
+  leverage_position: Leverage;
+  cashflow_quality: Signal3;
+  earnings_volatility: Volatility;
+  capex_growth_investment: Investment;
+  financial_transparency: Signal3;
+};
+
+type DealReadinessOut = {
+  status: DealReadinessStatus;
+  strengths: string[];
+  constraints: string[];
+};
+
+type DealSummaryResponse = {
+  client_name: string;
+  group_name?: string | null;
+  sector: StrategicSector;
+
+  rating_anchor: RatingAnchor;
+  eligibility: Eligibility;
+  financial_signals: FinancialSignals;
 
   indicative_raroc_pct?: number | null;
+
+  deal_readiness: DealReadinessOut;
+  mandate_fit_summary: string;
+
+  rm_actions: string[];
+  talking_points: string[];
+
+  created_at?: string | null;
   notes?: string | null;
 };
 
-type DealSummaryResponse = { [key: string]: any };
-
 type AIExplainResponse = {
-  executive_summary?: string;
-  key_risks_explained?: string[];
-  rm_talking_points?: string[];
+  executive_summary: string;
+  key_risks_explained: string[];
+  rm_talking_points: string[];
   missing_information?: string[];
-  disclaimer?: string;
+  disclaimer: string;
 };
-
-type Decision = "Proceed" | "Restructure" | "Decline" | "N/A";
 
 type AIQAResponse = {
-  decision?: Decision | null;
-  rationale?: string[];
-  conditions_next_steps?: string[];
-  answer?: string | null; // backend also returns a combined "answer" string
-  disclaimer?: string;
+  decision: Decision;
+  rationale: string[];
+  conditions_next_steps: string[];
+  answer: string;
+  disclaimer: string;
 };
 
-// Use labels that look professional + align with backend normalisers
-const SECTORS = ["Manufacturing", "Healthcare", "Advanced Technology", "Food Security", "Renewables"];
-const OUTLOOKS = ["Stable", "Positive", "Negative", "Watch"];
-
-// revenue trend allowed: Improving | Stable | Declining
-const TRENDS = ["Improving", "Stable", "Declining"];
-
-// margin trend allowed: Improving | Stable | Under Pressure
-const MARGIN_TRENDS = ["Improving", "Stable", "Under Pressure"];
-
-// leverage allowed: Low | Moderate | Elevated
-const POSITIONS = ["Low", "Moderate", "Elevated"];
-
-const QUALITIES = ["Strong", "Adequate", "Weak"];
-const VOLATILITY = ["Low", "Moderate", "High"];
-const INVESTMENT = ["Low", "Moderate", "High"];
-const TRANSPARENCY = ["Strong", "Adequate", "Weak"];
-const RATING_SYSTEMS = ["Credit Lens"];
-
-function asText(v: any): string {
-  if (v === null || v === undefined) return "";
-  if (typeof v === "string") return v;
-  try {
-    return JSON.stringify(v, null, 2);
-  } catch {
-    return String(v);
+async function postJSON<T>(path: string, body: any): Promise<T> {
+  const url = `${API_BASE}${path}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Request failed (${res.status})`);
   }
+  return (await res.json()) as T;
 }
 
-function isNumberOrEmpty(v: string): boolean {
-  if (v === "") return true;
-  return !Number.isNaN(Number(v));
+function safeNum(v: any, fallback: number) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
 }
 
-function formatExplain(resp: AIExplainResponse): string {
-  const parts: string[] = [];
-  if (resp.executive_summary) parts.push(`Executive summary\n${resp.executive_summary}`);
-  if (resp.key_risks_explained?.length) parts.push(`Key risks (explained)\n- ${resp.key_risks_explained.join("\n- ")}`);
-  if (resp.missing_information?.length) parts.push(`Missing information\n- ${resp.missing_information.join("\n- ")}`);
-  if (resp.rm_talking_points?.length) parts.push(`RM talking points\n- ${resp.rm_talking_points.join("\n- ")}`);
-  if (resp.disclaimer) parts.push(`Disclaimer\n${resp.disclaimer}`);
-  return parts.join("\n\n");
-}
-
-function formatQA(resp: AIQAResponse): string {
-  const parts: string[] = [];
-
-  const decision = (resp.decision || "N/A") as Decision;
-  const rationale = Array.isArray(resp.rationale) ? resp.rationale.filter(Boolean) : [];
-  const conditions = Array.isArray(resp.conditions_next_steps) ? resp.conditions_next_steps.filter(Boolean) : [];
-
-  // Prefer structured output; fall back to combined answer string if present.
-  if (resp.decision || rationale.length || conditions.length) {
-    parts.push(`Decision\n${decision}`);
-
-    if (rationale.length) parts.push(`Rationale\n- ${rationale.slice(0, 5).join("\n- ")}`);
-
-    if (conditions.length) {
-      parts.push(`Conditions / next steps\n- ${conditions.slice(0, 5).join("\n- ")}`);
-    } else {
-      parts.push(`Conditions / next steps\nNone`);
-    }
-  } else if (resp.answer) {
-    parts.push(`Answer\n${resp.answer}`);
-  } else {
-    parts.push(`Answer\nNo response returned.`);
-  }
-
-  if (resp.disclaimer) parts.push(`Disclaimer\n${resp.disclaimer}`);
-
-  return parts.join("\n\n");
-}
-
-/* =====================
-   Professional cards
-===================== */
-
-function ReadableCard({ text }: { text: string }) {
-  const sections = text
-    .split(/\n\s*\n/)
-    .map((b) => b.trim())
-    .filter(Boolean)
-    .map((block) => {
-      const lines = block
-        .split("\n")
-        .map((l) => l.trim())
-        .filter(Boolean);
-      const title = (lines[0] || "").replace(/:$/, "");
-      const rest = lines.slice(1);
-
-      const bullets = rest.filter((l) => l.startsWith("-")).map((l) => l.replace(/^-+\s*/, ""));
-      const body = rest.filter((l) => !l.startsWith("-")).join(" ");
-
-      return { title, bullets, body };
-    });
-
-  return (
-    <div className="cardout">
-      {sections.map((s, i) => (
-        <div key={i} className="cardout-section">
-          <div className="cardout-title">{s.title}</div>
-          {s.bullets.length > 0 ? (
-            <ul className="cardout-list">{s.bullets.map((b, j) => <li key={j}>{b}</li>)}</ul>
-          ) : (
-            <div className="cardout-text">{s.body}</div>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function Badge({ status }: { status: string }) {
-  const s = (status || "").toLowerCase();
-  const cls = s === "strong" ? "badge badge-strong" : s === "conditional" ? "badge badge-conditional" : "badge badge-weak";
-  return <span className={cls}>{status || "—"}</span>;
-}
-
-function AssessmentReadable({ assessment }: { assessment: DealSummaryResponse }) {
-  const dr = assessment?.deal_readiness || {};
-  const status = dr?.status || "—";
-
-  return (
-    <div className="readable">
-      <div className="readable-row">
-        <div className="readable-title">Deal readiness</div>
-        <Badge status={status} />
-      </div>
-
-      {assessment?.mandate_fit_summary && (
-        <>
-          <div className="readable-title">Mandate fit summary</div>
-          <div className="readable-text">{assessment.mandate_fit_summary}</div>
-        </>
-      )}
-
-      {Array.isArray(dr?.constraints) && dr.constraints.length > 0 && (
-        <>
-          <div className="readable-title">Constraints</div>
-          <ul className="readable-list">{dr.constraints.map((c: string, i: number) => <li key={i}>{c}</li>)}</ul>
-        </>
-      )}
-
-      {Array.isArray(assessment?.rm_actions) && assessment.rm_actions.length > 0 && (
-        <>
-          <div className="readable-title">RM actions</div>
-          <ul className="readable-list">{assessment.rm_actions.map((a: string, i: number) => <li key={i}>{a}</li>)}</ul>
-        </>
-      )}
-
-      {Array.isArray(dr?.strengths) && dr.strengths.length > 0 && (
-        <>
-          <div className="readable-title">Strengths</div>
-          <ul className="readable-list">{dr.strengths.map((s: string, i: number) => <li key={i}>{s}</li>)}</ul>
-        </>
-      )}
-    </div>
-  );
+function splitDrivers(s: string): string[] {
+  return (s || "")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
 }
 
 export default function App() {
-  const API_BASE =
-    (import.meta as any).env?.VITE_API_BASE?.trim() ||
-    ((window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") ? "http://127.0.0.1:8000" : "");
+  // Scroll target: right panel
+  const resultRef = useRef<HTMLDivElement | null>(null);
 
-  // Form state (left panel)
-  const [clientName, setClientName] = useState<string>("");
-  const [groupName, setGroupName] = useState<string>("");
-  const [sector, setSector] = useState<string>(SECTORS[0]);
+  // Inputs
+  const [clientName, setClientName] = useState("");
+  const [groupName, setGroupName] = useState("");
+  const [sector, setSector] = useState<StrategicSector>("Manufacturing");
 
-  const [ratingSystem, setRatingSystem] = useState<string>(RATING_SYSTEMS[0]);
-  const [ratingGrade, setRatingGrade] = useState<string>("");
-  const [outlook, setOutlook] = useState<string>(OUTLOOKS[0]);
+  const [ratingSystem, setRatingSystem] = useState("Credit Lens");
+  const [ratingGrade, setRatingGrade] = useState("6");
+  const [outlook, setOutlook] = useState<string>("Stable");
   const [asOf, setAsOf] = useState<string>("");
 
-  const [eligibilityScore, setEligibilityScore] = useState<string>("3.5");
-  const [eligibilityDrivers, setEligibilityDrivers] = useState<string>("");
+  const [eligScore, setEligScore] = useState<number>(3.0);
+  const [eligDrivers, setEligDrivers] = useState<string>("");
 
-  const [revTrend, setRevTrend] = useState<string>(TRENDS[1]);
-  const [marginTrend, setMarginTrend] = useState<string>(MARGIN_TRENDS[1]);
-  const [leveragePos, setLeveragePos] = useState<string>(POSITIONS[1]);
-  const [cfQuality, setCfQuality] = useState<string>(QUALITIES[1]);
-  const [earnVol, setEarnVol] = useState<string>(VOLATILITY[1]);
-  const [capex, setCapex] = useState<string>(INVESTMENT[1]);
-  const [transparency, setTransparency] = useState<string>(TRANSPARENCY[1]);
+  const [revTrend, setRevTrend] = useState<Trend3Y>("Stable");
+  const [marginTrend, setMarginTrend] = useState<MarginTrend3Y>("Stable");
+  const [leverage, setLeverage] = useState<Leverage>("Moderate");
+  const [cashflow, setCashflow] = useState<Signal3>("Adequate");
+  const [volatility, setVolatility] = useState<Volatility>("Moderate");
+  const [capex, setCapex] = useState<Investment>("Moderate");
+  const [transparency, setTransparency] = useState<Signal3>("Adequate");
 
-  const [indicativeRarocPct, setIndicativeRarocPct] = useState<string>("5.0");
+  const [raroc, setRaroc] = useState<number>(4.3);
   const [notes, setNotes] = useState<string>("");
 
-  // Outputs (right panel)
+  // Outputs
   const [assessResult, setAssessResult] = useState<DealSummaryResponse | null>(null);
-  const [showRaw, setShowRaw] = useState<boolean>(false);
+  const [showRaw, setShowRaw] = useState(false);
 
-  const [aiExplain, setAiExplain] = useState<string>("");
-  const [aiQA, setAiQA] = useState<string>("");
-  const [qaQuestion, setQaQuestion] = useState<string>("");
+  const [aiExplain, setAiExplain] = useState<AIExplainResponse | null>(null);
+  const [aiQa, setAiQa] = useState<AIQAResponse | null>(null);
+  const [qaQuestion, setQaQuestion] = useState("");
 
-  const [busyAssess, setBusyAssess] = useState<boolean>(false);
-  const [busyExplain, setBusyExplain] = useState<boolean>(false);
-  const [busyQA, setBusyQA] = useState<boolean>(false);
+  // Busy / error
+  const [busyAssess, setBusyAssess] = useState(false);
+  const [busyExplain, setBusyExplain] = useState(false);
+  const [busyQa, setBusyQa] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
 
-  const [errorMsg, setErrorMsg] = useState<string>("");
-
-  const canAssess = useMemo(() => {
-    if (!clientName.trim()) return false;
-    if (!ratingGrade.trim()) return false;
-    if (!isNumberOrEmpty(eligibilityScore) || eligibilityScore === "") return false;
-    if (indicativeRarocPct.trim() === "") return false;
-    if (Number.isNaN(Number(indicativeRarocPct))) return false;
-    return true;
-  }, [clientName, ratingGrade, eligibilityScore, indicativeRarocPct]);
-
-  function buildPayload(): DealInputRequest {
-    const elig = Number(eligibilityScore);
-    const raroc = Number(indicativeRarocPct);
-
+  const payload = useMemo(() => {
     return {
-      client_name: clientName.trim(),
-      group_name: groupName.trim() ? groupName.trim() : null,
-      strategic_sector: sector,
-
-      rating_system: ratingSystem,
-      rating_grade: ratingGrade.trim(),
-      outlook: outlook || null,
-      as_of: asOf.trim() ? asOf.trim() : null,
-
-      eligibility_score: elig,
-      eligibility_drivers: eligibilityDrivers.trim() ? eligibilityDrivers.trim() : null,
-
-      revenue_trend_3y: revTrend,
-      margin_trend_3y: marginTrend,
-      leverage_position: leveragePos,
-      cash_flow_quality: cfQuality,
-      earnings_volatility: earnVol,
-      capex_growth_investment: capex,
-      financial_transparency: transparency,
-
-      indicative_raroc_pct: raroc,
-      notes: notes.trim() ? notes.trim() : null,
+      client_name: clientName,
+      group_name: groupName || null,
+      sector,
+      rating_anchor: {
+        system: ratingSystem,
+        grade: ratingGrade,
+        outlook: outlook || null,
+        as_of: asOf || null,
+      },
+      eligibility: {
+        score: safeNum(eligScore, 0),
+        drivers: splitDrivers(eligDrivers),
+      },
+      financial_signals: {
+        revenue_trend_3y: revTrend,
+        margin_trend_3y: marginTrend,
+        leverage_position: leverage,
+        cashflow_quality: cashflow,
+        earnings_volatility: volatility,
+        capex_growth_investment: capex,
+        financial_transparency: transparency,
+      },
+      indicative_raroc_pct: safeNum(raroc, 0),
+      notes: notes || null,
     };
-  }
+  }, [
+    clientName,
+    groupName,
+    sector,
+    ratingSystem,
+    ratingGrade,
+    outlook,
+    asOf,
+    eligScore,
+    eligDrivers,
+    revTrend,
+    marginTrend,
+    leverage,
+    cashflow,
+    volatility,
+    capex,
+    transparency,
+    raroc,
+    notes,
+  ]);
 
-  async function postJSON<T>(path: string, body: any): Promise<T> {
-    const res = await fetch(`${API_BASE}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-
-    if (!res.ok) {
-      const t = await res.text();
-      throw new Error(`HTTP ${res.status} ${res.statusText}${t ? ` — ${t}` : ""}`);
+  // Auto-scroll after assessResult appears
+  useEffect(() => {
+    if (assessResult) {
+      // allow DOM paint
+      setTimeout(() => {
+        resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 50);
     }
-    return (await res.json()) as T;
-  }
+  }, [assessResult]);
 
   async function onAssess() {
     setErrorMsg("");
-    setAiExplain("");
-    setAiQA("");
-    setAssessResult(null);
     setShowRaw(false);
+    setAiExplain(null);
+    setAiQa(null);
 
     setBusyAssess(true);
     try {
-      const payload = buildPayload();
-      const result = await postJSON<DealSummaryResponse>("/assess", payload);
-      setAssessResult(result);
+      const res = await postJSON<DealSummaryResponse>("/assess", payload);
+      setAssessResult(res);
     } catch (e: any) {
       setErrorMsg(e?.message || "Assessment failed.");
+      setAssessResult(null);
     } finally {
       setBusyAssess(false);
     }
   }
 
   async function onExplain() {
+    if (!assessResult) return;
     setErrorMsg("");
-    setAiExplain("");
-
-    if (!assessResult) {
-      setErrorMsg("Run an assessment first.");
-      return;
-    }
-
     setBusyExplain(true);
     try {
-      const resp = await postJSON<AIExplainResponse>("/ai/explain", { deal_summary: assessResult });
-      setAiExplain(formatExplain(resp));
+      const res = await postJSON<AIExplainResponse>("/ai/explain", { deal_summary: assessResult });
+      setAiExplain(res);
     } catch (e: any) {
-      setErrorMsg(e?.message || "Explanation failed.");
+      setErrorMsg(e?.message || "Explain failed.");
+      setAiExplain(null);
     } finally {
       setBusyExplain(false);
     }
   }
 
-  async function onAsk() {
+  async function onAskQa() {
     setErrorMsg("");
-    setAiQA("");
-
-    const q = qaQuestion.trim();
-    if (!q) {
-      setErrorMsg("Enter a question first.");
-      return;
-    }
-
-    setBusyQA(true);
+    setBusyQa(true);
     try {
-      const resp = await postJSON<AIQAResponse>("/ai/qa", {
-        question: q,
+      const res = await postJSON<AIQAResponse>("/ai/qa", {
+        question: qaQuestion,
         deal_summary: assessResult,
       });
-
-      setAiQA(formatQA(resp));
+      setAiQa(res);
     } catch (e: any) {
       setErrorMsg(e?.message || "Q&A failed.");
+      setAiQa(null);
     } finally {
-      setBusyQA(false);
+      setBusyQa(false);
     }
   }
 
-  function clearAll() {
+  function onClear() {
     setErrorMsg("");
     setAssessResult(null);
-    setShowRaw(false);
-    setAiExplain("");
-    setAiQA("");
+    setAiExplain(null);
+    setAiQa(null);
     setQaQuestion("");
-  }
-
-  function clearAI() {
-    setErrorMsg("");
-    setAiExplain("");
-    setAiQA("");
+    setShowRaw(false);
   }
 
   return (
@@ -389,200 +292,280 @@ export default function App() {
         <div className="subtle">Assessment + explanation + deal Q&amp;A</div>
       </header>
 
+      {errorMsg ? (
+        <div className="error" style={{ margin: "10px 0" }}>
+          {errorMsg}
+        </div>
+      ) : null}
+
       <main className="grid">
         {/* LEFT: Inputs */}
         <section className="panel">
-          <h2>Client</h2>
+          <h2>Inputs</h2>
 
           <label>Client name *</label>
-          <input value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="e.g., ABC Manufacturing LLC" />
+          <input value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="Client name" />
 
           <label>Group name</label>
-          <input value={groupName} onChange={(e) => setGroupName(e.target.value)} placeholder="Optional" />
+          <input value={groupName} onChange={(e) => setGroupName(e.target.value)} placeholder="Group name" />
 
           <label>Strategic sector</label>
-          <select value={sector} onChange={(e) => setSector(e.target.value)}>
-            {SECTORS.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
+          <select value={sector} onChange={(e) => setSector(e.target.value as StrategicSector)}>
+            <option>Manufacturing</option>
+            <option>Advanced Technology</option>
+            <option>Healthcare</option>
+            <option>Food Security</option>
+            <option>Renewables</option>
+            <option>Other</option>
           </select>
 
-          <h2>Rating anchor</h2>
+          <hr />
 
+          <h3>Rating anchor</h3>
           <label>System</label>
           <select value={ratingSystem} onChange={(e) => setRatingSystem(e.target.value)}>
-            {RATING_SYSTEMS.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
+            <option>Credit Lens</option>
           </select>
 
           <label>Rating grade *</label>
-          <input value={ratingGrade} onChange={(e) => setRatingGrade(e.target.value)} placeholder="e.g., 6" />
+          <input value={ratingGrade} onChange={(e) => setRatingGrade(e.target.value)} placeholder="e.g. 6" />
 
           <label>Outlook</label>
           <select value={outlook} onChange={(e) => setOutlook(e.target.value)}>
-            {OUTLOOKS.map((o) => (
-              <option key={o} value={o}>
-                {o}
-              </option>
-            ))}
+            <option>Stable</option>
+            <option>Positive</option>
+            <option>Negative</option>
+            <option>Watch</option>
           </select>
 
           <label>As of (YYYY-MM-DD)</label>
           <input value={asOf} onChange={(e) => setAsOf(e.target.value)} placeholder="Optional" />
 
-          <h2>Eligibility</h2>
+          <hr />
 
+          <h3>Eligibility</h3>
           <label>Eligibility score (0–6) *</label>
-          <input type="number" step="0.1" min="0" max="6" value={eligibilityScore} onChange={(e) => setEligibilityScore(e.target.value)} />
+          <input
+            type="number"
+            step="0.1"
+            value={eligScore}
+            onChange={(e) => setEligScore(safeNum(e.target.value, 0))}
+          />
 
           <label>Eligibility drivers (comma-separated)</label>
-          <input value={eligibilityDrivers} onChange={(e) => setEligibilityDrivers(e.target.value)} placeholder="e.g., Job creation, Exports, ICV" />
+          <input value={eligDrivers} onChange={(e) => setEligDrivers(e.target.value)} placeholder="e.g., ICV, jobs" />
 
-          <h2>Financial signals</h2>
+          <hr />
 
+          <h3>Financial signals</h3>
           <label>Revenue trend (3Y)</label>
-          <select value={revTrend} onChange={(e) => setRevTrend(e.target.value)}>
-            {TRENDS.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
+          <select value={revTrend} onChange={(e) => setRevTrend(e.target.value as Trend3Y)}>
+            <option>Improving</option>
+            <option>Stable</option>
+            <option>Declining</option>
           </select>
 
           <label>Margin trend (3Y)</label>
-          <select value={marginTrend} onChange={(e) => setMarginTrend(e.target.value)}>
-            {MARGIN_TRENDS.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
+          <select value={marginTrend} onChange={(e) => setMarginTrend(e.target.value as MarginTrend3Y)}>
+            <option>Improving</option>
+            <option>Stable</option>
+            <option>Under Pressure</option>
           </select>
 
           <label>Leverage position</label>
-          <select value={leveragePos} onChange={(e) => setLeveragePos(e.target.value)}>
-            {POSITIONS.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
+          <select value={leverage} onChange={(e) => setLeverage(e.target.value as Leverage)}>
+            <option>Low</option>
+            <option>Moderate</option>
+            <option>Elevated</option>
           </select>
 
           <label>Cash flow quality</label>
-          <select value={cfQuality} onChange={(e) => setCfQuality(e.target.value)}>
-            {QUALITIES.map((q) => (
-              <option key={q} value={q}>
-                {q}
-              </option>
-            ))}
+          <select value={cashflow} onChange={(e) => setCashflow(e.target.value as Signal3)}>
+            <option>Strong</option>
+            <option>Adequate</option>
+            <option>Weak</option>
           </select>
 
           <label>Earnings volatility</label>
-          <select value={earnVol} onChange={(e) => setEarnVol(e.target.value)}>
-            {VOLATILITY.map((v) => (
-              <option key={v} value={v}>
-                {v}
-              </option>
-            ))}
+          <select value={volatility} onChange={(e) => setVolatility(e.target.value as Volatility)}>
+            <option>Low</option>
+            <option>Moderate</option>
+            <option>High</option>
           </select>
 
           <label>Capex / growth investment</label>
-          <select value={capex} onChange={(e) => setCapex(e.target.value)}>
-            {INVESTMENT.map((i) => (
-              <option key={i} value={i}>
-                {i}
-              </option>
-            ))}
+          <select value={capex} onChange={(e) => setCapex(e.target.value as Investment)}>
+            <option>High</option>
+            <option>Moderate</option>
+            <option>Low</option>
           </select>
 
           <label>Financial transparency</label>
-          <select value={transparency} onChange={(e) => setTransparency(e.target.value)}>
-            {TRANSPARENCY.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
+          <select value={transparency} onChange={(e) => setTransparency(e.target.value as Signal3)}>
+            <option>Strong</option>
+            <option>Adequate</option>
+            <option>Weak</option>
           </select>
 
-          <h2>RAROC</h2>
-          <label>RAROC (%)</label>
-          <input type="number" step="0.1" min="0" max="100" value={indicativeRarocPct} onChange={(e) => setIndicativeRarocPct(e.target.value)} />
-          <div className="subtle">RM-entered screening estimate. Indicative only; final approval subject to Credit assessment.</div>
+          <hr />
 
-          <h2>Notes</h2>
-          <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional RM notes" rows={5} />
+          <h3>RAROC</h3>
+          <label>RAROC (%)</label>
+          <input type="number" step="0.1" value={raroc} onChange={(e) => setRaroc(safeNum(e.target.value, 0))} />
+          <div className="subtle">
+            RM-entered screening estimate. Indicative only; final approval subject to Credit assessment.
+          </div>
+
+          <hr />
+
+          <label>Notes</label>
+          <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional RM notes" />
 
           <div className="btn-row">
-            <button onClick={onAssess} disabled={!canAssess || busyAssess}>
+            <button onClick={onAssess} disabled={busyAssess || !clientName.trim()}>
               {busyAssess ? "Assessing..." : "Assess deal"}
             </button>
-            <button onClick={clearAll} className="secondary">
+            <button className="secondary" onClick={onClear} disabled={busyAssess || busyExplain || busyQa}>
               Clear result
             </button>
           </div>
 
-          <div className="subtle">
-            System endpoints: <code>/assess</code>, <code>/ai/explain</code>, <code>/ai/qa</code>
-          </div>
-
-          {errorMsg && <div className="error">{errorMsg}</div>}
+          <div className="subtle">System endpoints: /assess, /ai/explain, /ai/qa</div>
         </section>
 
         {/* RIGHT: Outputs */}
-        <section className="panel">
+        <section className="panel" ref={resultRef}>
           <h2>Assessment output</h2>
           <div className="subtle">Run an assessment to see deal readiness, constraints, and RM actions.</div>
 
           {assessResult ? (
             <>
-              <AssessmentReadable assessment={assessResult} />
-              <div className="btn-row" style={{ marginTop: 10 }}>
+              <div className="card">
+                <div className="row">
+                  <div>
+                    <div className="k">Deal readiness</div>
+                    <div className="v">{assessResult.deal_readiness?.status}</div>
+                    <div className="k" style={{ marginTop: 10 }}>
+                      Mandate fit summary
+                    </div>
+                    <div className="v">{assessResult.mandate_fit_summary}</div>
+                  </div>
+                  <div className="badge">{assessResult.deal_readiness?.status}</div>
+                </div>
+
+                <div className="k" style={{ marginTop: 10 }}>
+                  Constraints
+                </div>
+                <ul>
+                  {(assessResult.deal_readiness?.constraints || []).map((x, i) => (
+                    <li key={i}>{x}</li>
+                  ))}
+                </ul>
+
+                <div className="k">RM actions</div>
+                <ul>
+                  {(assessResult.rm_actions || []).map((x, i) => (
+                    <li key={i}>{x}</li>
+                  ))}
+                </ul>
+
+                <div className="k">Strengths</div>
+                <ul>
+                  {(assessResult.deal_readiness?.strengths || []).map((x, i) => (
+                    <li key={i}>{x}</li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="btn-row">
                 <button className="secondary" onClick={() => setShowRaw((v) => !v)}>
                   {showRaw ? "Hide raw JSON" : "Show raw JSON"}
                 </button>
               </div>
-              {showRaw && <pre className="output">{asText(assessResult)}</pre>}
+
+              {showRaw ? (
+                <pre className="output">{JSON.stringify(assessResult, null, 2)}</pre>
+              ) : null}
+
+              <hr />
+
+              <h2>AI: Explain assessment</h2>
+              <div className="subtle">Generate a structured explanation based on the assessment.</div>
+
+              <div className="btn-row">
+                <button onClick={onExplain} disabled={busyExplain}>
+                  {busyExplain ? "Generating..." : "Generate explanation"}
+                </button>
+                <button className="secondary" onClick={() => setAiExplain(null)} disabled={busyExplain}>
+                  Clear AI output
+                </button>
+              </div>
+
+              {aiExplain ? (
+                <div className="card">
+                  <div className="k">Executive summary</div>
+                  <div className="v">{aiExplain.executive_summary}</div>
+
+                  <div className="k" style={{ marginTop: 10 }}>
+                    Key risks (explained)
+                  </div>
+                  <ul>
+                    {(aiExplain.key_risks_explained || []).map((x, i) => (
+                      <li key={i}>{x}</li>
+                    ))}
+                  </ul>
+
+                  <div className="k">RM talking points</div>
+                  <ul>
+                    {(aiExplain.rm_talking_points || []).map((x, i) => (
+                      <li key={i}>{x}</li>
+                    ))}
+                  </ul>
+
+                  <div className="k">Disclaimer</div>
+                  <div className="v">{aiExplain.disclaimer}</div>
+                </div>
+              ) : null}
+
+              <hr />
+
+              <h2>AI: Deal Q&amp;A</h2>
+              <div className="subtle">Ask a question; if an assessment exists, it is used as context.</div>
+
+              <div className="row" style={{ gap: 10 }}>
+                <input
+                  value={qaQuestion}
+                  onChange={(e) => setQaQuestion(e.target.value)}
+                  placeholder="What to do next?"
+                />
+                <button onClick={onAskQa} disabled={busyQa || !qaQuestion.trim()}>
+                  {busyQa ? "Asking..." : "Ask"}
+                </button>
+              </div>
+
+              {aiQa ? (
+                <div className="card">
+                  <div className="k">Decision</div>
+                  <div className="v">{aiQa.decision}</div>
+
+                  <div className="k" style={{ marginTop: 10 }}>
+                    Answer
+                  </div>
+                  <pre className="output">{aiQa.answer}</pre>
+
+                  <div className="k">Disclaimer</div>
+                  <div className="v">{aiQa.disclaimer}</div>
+                </div>
+              ) : null}
             </>
           ) : (
             <div className="subtle" style={{ marginTop: 10 }}>
-              No assessment yet.
+              Run an assessment to see outputs.
             </div>
           )}
 
-          <div className="box">
-            <h3>AI: Explain assessment</h3>
-            <div className="subtle">Generate a structured explanation based on the assessment.</div>
-            <div className="btn-row">
-              <button onClick={onExplain} disabled={!assessResult || busyExplain}>
-                {busyExplain ? "Generating..." : "Generate explanation"}
-              </button>
-              <button onClick={clearAI} className="secondary">
-                Clear AI output
-              </button>
-            </div>
-
-            {aiExplain ? <ReadableCard text={aiExplain} /> : <div className="subtle" style={{ marginTop: 10 }}>No explanation yet.</div>}
-          </div>
-
-          <div className="box">
-            <h3>AI: Deal Q&amp;A</h3>
-            <div className="subtle">Ask a question; if an assessment exists, it is used as context.</div>
-            <div className="qa-row">
-              <input value={qaQuestion} onChange={(e) => setQaQuestion(e.target.value)} placeholder="e.g., Should we proceed, restructure, or decline?" />
-              <button onClick={onAsk} disabled={busyQA}>
-                {busyQA ? "Asking..." : "Ask"}
-              </button>
-            </div>
-
-            {aiQA ? <ReadableCard text={aiQA} /> : <div className="subtle" style={{ marginTop: 10 }}>No answer yet.</div>}
-
-            <div className="subtle" style={{ marginTop: 10 }}>
-              Connection: <code>{API_BASE}</code>
-            </div>
+          <div className="subtle" style={{ marginTop: 10 }}>
+            Connection: {API_BASE ? API_BASE : ""}
           </div>
         </section>
       </main>
