@@ -1,0 +1,11 @@
+﻿fastapi
+uvicorn[standard]
+numpy
+pandas
+joblib
+lightgbm<5
+openai
+python-multipart
+pdfplumber
+
+# shap
