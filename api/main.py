@@ -5,6 +5,9 @@ import io
 import json
 import os
 import re
+import traceback
+
+from fastapi import HTTPException
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -1100,6 +1103,9 @@ def _build_hybrid_credit_text(
 # =========================
 # Endpoints
 # =========================
+from typing import List, Optional
+from fastapi import UploadFile, File, HTTPException
+
 @app.post("/financials/parse-pdf")
 async def parse_pdf(file: UploadFile = File(...)):
     filename = file.filename or "uploaded.pdf"
@@ -1114,59 +1120,69 @@ async def parse_pdf(file: UploadFile = File(...)):
     if len(data) > MAX_BYTES:
         raise HTTPException(status_code=413, detail="PDF too large. Please upload a PDF under 10MB.")
 
+    # Dependency check
     try:
+        import io
         import pdfplumber  # type: ignore
-    except Exception:
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Dependency error: {type(e).__name__}: {e}")
+
+    # Parse with protection
+    try:
+        text_parts: List[str] = []
+        tables_found = 0
+
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            pages_scanned = min(len(pdf.pages), 3)  # MVP: limit to first 3 pages
+
+            for i in range(pages_scanned):
+                page = pdf.pages[i]
+
+                txt = (page.extract_text() or "").strip()
+                if txt:
+                    text_parts.append(f"[Page {i+1}]\n{txt}")
+
+                # Tables count (best-effort)
+                try:
+                    tables = page.extract_tables() or []
+                    for t in tables:
+                        if t and any(any(cell for cell in row) for row in t):
+                            tables_found += 1
+                except Exception:
+                    pass
+
+        text_full = "\n\n".join(text_parts).strip()
+
+        # Cap to avoid huge payloads
+        MAX_TEXT_CHARS = 25000
+        text = text_full[:MAX_TEXT_CHARS]
+        truncated = len(text_full) > MAX_TEXT_CHARS
+        if truncated:
+            text += "\n... (truncated to 25k chars)"
+
+        # Preview for UI
+        text_preview = text if len(text) <= 6000 else (text[:6000] + "\n... (preview truncated)")
+
+        return {
+            "filename": filename,
+            "pages_scanned": pages_scanned,
+            "tables_found": tables_found,
+            "text": text,
+            "text_preview": text_preview,
+            "note": (
+                "PDF extraction is best-effort. If this PDF is scanned, text may be empty. "
+                "For reliable parsing, use Excel/CSV."
+            ),
+        }
+
+    except Exception as e:
+        import traceback
+        print("parse-pdf runtime failure:", repr(e))
+        traceback.print_exc()
         raise HTTPException(
             status_code=500,
-            detail="pdfplumber not installed. Add it to api/requirements.txt and redeploy.",
+            detail=f"parse-pdf runtime failure: {type(e).__name__}: {e}",
         )
-
-    text_parts: List[str] = []
-    tables_found = 0
-    pages_scanned = 0
-
-    with pdfplumber.open(io.BytesIO(data)) as pdf:
-        pages_scanned = min(len(pdf.pages), 3)  # limit to first 3 pages
-        for i in range(pages_scanned):
-            page = pdf.pages[i]
-            txt = (page.extract_text() or "").strip()
-            if txt:
-                text_parts.append(f"[Page {i+1}]\n{txt}")
-
-            try:
-                tables = page.extract_tables() or []
-                for t in tables:
-                    if t and any(any(cell for cell in row) for row in t):
-                        tables_found += 1
-            except Exception:
-                pass
-
-    text_full = "\n\n".join(text_parts).strip()
-
-    # Cap for MVP to avoid huge payloads
-    MAX_TEXT_CHARS = 25000
-    text = text_full[:MAX_TEXT_CHARS]
-    if len(text_full) > MAX_TEXT_CHARS:
-        text += "\n... (truncated to 25k chars)"
-
-    # Preview for UI
-    text_preview = text
-    if len(text_preview) > 6000:
-        text_preview = text_preview[:6000] + "\n... (preview truncated)"
-
-    return {
-        "filename": filename,
-        "pages_scanned": pages_scanned,
-        "tables_found": tables_found,
-        "text": text,
-        "text_preview": text_preview,
-        "note": (
-            "PDF extraction is best-effort. If this PDF is scanned, text may be empty. "
-            "For reliable parsing, use Excel/CSV."
-        ),
-    }
-
 
 @app.post("/financials/infer-2y")
 def infer_financials_2y(payload: Dict[str, Any]):

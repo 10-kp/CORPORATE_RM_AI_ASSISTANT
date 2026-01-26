@@ -7,6 +7,6 @@ lightgbm<5
 openai
 
 python-multipart
-
+pdfplumber
 
 # shap
